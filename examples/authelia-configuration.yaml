@@ -1,0 +1,172 @@
+data:
+  configuration.yml: |
+    # ====================
+    # Server
+    # ====================
+    server:
+      address: 'tcp://0.0.0.0:9091'
+      asset_path: '/config/assets/'
+      path: 'auth'                # /auth subpath
+
+      endpoints:
+        authz:
+          forward-auth:
+            implementation: 'ForwardAuth'
+
+    theme: 'auto'
+
+    # ====================
+    # Log
+    # ====================
+    log:
+      level: 'info'
+      format: 'text'
+
+    # ====================
+    # 2FA - TOTP
+    # ====================
+    totp:
+      issuer: 'YourCompany'       # ← Change to your company name
+      period: 30
+      skew: 1
+
+    # ====================
+    # 2FA - WebAuthn (optional)
+    # ====================
+    # webauthn:
+    #   disable: false
+    #   display_name: 'YourCompany'
+
+    # ====================
+    # LDAP Authentication
+    # ====================
+    authentication_backend:
+      password_reset:
+        disable: true
+
+      ldap:
+        # ↓↓↓ Change to your LDAP info ↓↓↓
+        address: 'ldap://ldap.company.com:389'
+        implementation: 'activedirectory'    # AD: 'activedirectory', OpenLDAP: 'custom'
+        timeout: '5s'
+        start_tls: false
+
+        base_dn: 'dc=company,dc=com'
+
+        # Service account (for LDAP lookups)
+        user: 'cn=authelia,ou=service,dc=company,dc=com'
+        password: 'ldap-bind-password'       # ← LDAP bind password
+
+        # User search
+        users_filter: '(&(|({username_attribute}={input})({mail_attribute}={input}))(objectClass=person))'
+        username_attribute: 'sAMAccountName'  # AD: 'sAMAccountName', OpenLDAP: 'uid'
+        mail_attribute: 'mail'
+        display_name_attribute: 'displayName'
+
+        # Group search
+        # groups_filter: '(&(member={dn})(objectClass=group))'
+        # group_name_attribute: 'cn'
+        # ↑↑↑ Change to your LDAP info ↑↑↑
+
+    # ====================
+    # Session
+    # ====================
+    session:
+      secret: 'session-secret-minimum-32-characters!!'  # ← Random string, 32+ chars
+
+      cookies:
+        - domain: 'company.com'                          # ← Your domain
+          authelia_url: 'https://dify.company.com/auth'
+          default_redirection_url: 'https://dify.company.com'
+          name: 'authelia_session'
+          same_site: 'lax'
+          inactivity: '5m'
+          expiration: '1h'
+          remember_me: '1M'
+
+    # ====================
+    # Storage (test: sqlite / production: postgres)
+    # ====================
+    # For testing (sqlite)
+    storage:
+      encryption_key: 'storage-encryption-key-min-32-chars!!'
+      local:
+        path: '/config/db.sqlite3'
+
+    # For production (postgres) - switch after testing
+    # storage:
+    #   encryption_key: 'storage-encryption-key-min-32-chars!!'
+    #   postgres:
+    #     address: 'tcp://your-rds-endpoint:5432'
+    #     database: 'authelia'
+    #     username: 'authelia'
+    #     password: 'authelia-db-password'
+
+    # ====================
+    # Notification (test: file / production: SMTP)
+    # ====================
+    # For testing
+    notifier:
+      filesystem:
+        filename: '/config/notification.txt'
+
+    # For production (SMTP) - switch after testing
+    # notifier:
+    #   smtp:
+    #     address: 'smtp://mail.company.com:587'
+    #     username: 'authelia@company.com'
+    #     password: 'smtp-password'
+    #     sender: 'Authelia <authelia@company.com>'
+
+    # ====================
+    # Access Control
+    # ====================
+    access_control:
+      default_policy: 'two_factor'
+
+      rules:
+        # Authelia resources (bypass)
+        - domain: 'dify.company.com'
+          resources:
+            - '^/auth/api/.*$'
+            - '^/auth/.*$'
+          policy: 'bypass'
+
+        # Internal network: 1FA (skip 2FA for company IP)
+        - domain: 'dify.company.com'
+          networks:
+            - '10.0.0.0/8'
+            - '192.168.0.0/16'
+          policy: 'one_factor'
+
+        # External: 2FA
+        - domain: 'dify.company.com'
+          policy: 'two_factor'
+
+    # ====================
+    # OIDC Provider (for Dify SSO)
+    # ====================
+    # Generate client_secret hash:
+    #   docker run --rm authelia/authelia:latest \
+    #     authelia crypto hash generate argon2 --password 'your-plain-secret'
+    #
+    # Use the plain secret in dify-sso .env (OIDC_CLIENT_SECRET)
+    # Use the hash below in client_secret
+    identity_providers:
+      oidc:
+        clients:
+          - client_id: 'dify'
+            client_name: 'Dify'
+            client_secret: '$argon2id$v=19$m=65536,t=3,p=4$...'  # ← Replace with generated hash
+            public: false
+            authorization_policy: 'two_factor'    # or 'one_factor'
+            redirect_uris:
+              - 'https://dify.company.com/console/api/enterprise/sso/oidc/callback'
+            scopes:
+              - 'openid'
+              - 'profile'
+              - 'email'
+            response_types:
+              - 'code'
+            token_endpoint_auth_method: 'client_secret_post'
+            pkce_challenge_method: 'S256'
