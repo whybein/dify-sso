@@ -2,22 +2,25 @@
 
 Dify 무료 버전에 SSO를 추가하여 Authelia(LDAP) 한 번의 로그인으로 Dify를 사용할 수 있도록 설정하는 가이드입니다.
 
+Authelia는 별도 서브도메인 없이 **경로 기반** (`dify.example.com/auth`)으로 구성합니다.
+
 ## 목표
 
 - Dify 접속 시 로그인하지 않은 상태면 **Authelia로 자동 리다이렉트**
 - Authelia에서 LDAP 계정으로 로그인하면 **Dify에 자동 로그인/사용자 생성**
 - Dify 자체 로그인 화면은 **보이지 않음** (SSO 단일 로그인)
+- 모든 서비스가 **하나의 도메인** (`dify.example.com`)에서 동작
 
 ## 전체 흐름
 
 ```
-사용자 브라우저          Nginx              dify-sso           Authelia           Dify
+사용자 브라우저          Nginx              dify-sso           Authelia(/auth)    Dify
      │                   │                    │                  │                 │
      │─── /signin ──────>│                    │                  │                 │
      │<── 302 redirect ──│                    │                  │                 │
      │─── /sso/login ───>│───────────────────>│                  │                 │
      │<── 302 redirect ──│<───────────────────│                  │                 │
-     │─── authorize ────>│                    │                  │                 │
+     │─── /auth/... ────>│                    │                  │                 │
      │                   │──────────────────────────────────────>│                 │
      │<──── 로그인 화면 ────│                    │                  │                 │
      │──── LDAP 인증 ────>│                    │                  │                 │
@@ -40,8 +43,7 @@ Dify 무료 버전에 SSO를 추가하여 Authelia(LDAP) 한 번의 로그인으
 
 | 항목 | 설명 | 예시 |
 |------|------|------|
-| Dify 도메인 | Dify 웹 콘솔 URL | `https://dify.example.com` |
-| Authelia 도메인 | Authelia 인증 서버 URL | `https://auth.example.com` |
+| Dify 도메인 | Dify 웹 콘솔 URL (Authelia도 동일 도메인 사용) | `https://dify.example.com` |
 | Dify SECRET_KEY | Dify `.env`의 SECRET_KEY | `openssl rand -base64 42`로 생성 |
 | Dify DB 접속 정보 | PostgreSQL 호스트/포트/계정 | dify-sso가 Dify와 동일 DB 사용 |
 | Dify Redis 접속 정보 | Redis 호스트/포트/비밀번호 | dify-sso가 Dify와 동일 Redis 사용 |
@@ -59,7 +61,25 @@ SELECT id FROM tenants LIMIT 1;
 
 ## 2단계: Authelia 설정
 
-Authelia `configuration.yml`에 OIDC 클라이언트를 추가합니다.
+### 경로 기반 설정 (`/auth`)
+
+Authelia `configuration.yml`에서 `server.path`를 설정하면 모든 엔드포인트가 `/auth/` 하위로 이동합니다.
+
+```yaml
+server:
+  address: 'tcp://0.0.0.0:9091/'
+  path: 'auth'  # ← 이 설정으로 /auth 프리픽스 적용
+```
+
+이 설정에 의해 Authelia 엔드포인트가 다음과 같이 변경됩니다:
+
+| 기존 (서브도메인) | 변경 후 (경로 기반) |
+|---|---|
+| `https://auth.example.com/.well-known/openid-configuration` | `https://dify.example.com/auth/.well-known/openid-configuration` |
+| `https://auth.example.com/api/oidc/authorization` | `https://dify.example.com/auth/api/oidc/authorization` |
+| `https://auth.example.com/api/oidc/token` | `https://dify.example.com/auth/api/oidc/token` |
+
+### OIDC 클라이언트 등록
 
 ```yaml
 identity_providers:
@@ -113,10 +133,10 @@ TENANT_ID=<1단계에서 확인한 TENANT_ID>
 EDITION=SELF_HOSTED
 ACCOUNT_DEFAULT_ROLE=editor
 
-# ── OIDC 설정 (Authelia) ──
+# ── OIDC 설정 (Authelia - 경로 기반) ──
 OIDC_CLIENT_ID=dify
 OIDC_CLIENT_SECRET=my-dify-secret            # 평문 시크릿 (Authelia에는 해시값 입력)
-OIDC_DISCOVERY_URL=https://auth.example.com/.well-known/openid-configuration
+OIDC_DISCOVERY_URL=https://dify.example.com/auth/.well-known/openid-configuration
 OIDC_REDIRECT_URI=https://dify.example.com/console/api/enterprise/sso/oidc/callback
 OIDC_SCOPE=openid profile email
 OIDC_RESPONSE_TYPE=code
@@ -203,14 +223,27 @@ curl http://localhost:8000/health?detail=true
 
 ## 5단계: Nginx 프록시 설정
 
-Dify의 Nginx 설정에 아래 내용을 추가합니다. SSO 관련 요청만 dify-sso로 라우팅합니다.
+하나의 도메인(`dify.example.com`)에서 Authelia, dify-sso, Dify를 모두 경로로 분기합니다.
 
 ```nginx
 server {
     listen 443 ssl;
     server_name dify.example.com;
 
-    # ... 기존 SSL 및 Dify 설정 ...
+    # ... 기존 SSL 설정 ...
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Authelia (/auth 경로)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    # [0] Authelia — /auth 이하 모든 요청을 Authelia로 프록시
+    location /auth {
+        proxy_pass http://authelia:9091;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # SSO 설정 (기존 Dify location 블록보다 위에 배치)
@@ -293,7 +326,10 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # ... 기존 Dify 프록시 설정 (아래에 위치) ...
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Dify 본체 (아래에 위치)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
     # location / {
     #     proxy_pass http://dify-web:3000;
     #     ...
@@ -305,7 +341,7 @@ server {
 }
 ```
 
-> **중요**: SSO location 블록은 기존 Dify의 `/console/api` 블록보다 **위에** 배치해야 합니다. Nginx는 위에서부터 매칭하므로, SSO 요청이 Dify API로 가지 않도록 먼저 잡아야 합니다.
+> **중요**: `location /auth`, SSO location 블록은 기존 Dify의 `/console/api` 블록보다 **위에** 배치해야 합니다. Nginx는 위에서부터 매칭하므로, SSO/Authelia 요청이 Dify API로 가지 않도록 먼저 잡아야 합니다.
 
 ### Nginx 설정 테스트 및 적용
 
@@ -320,6 +356,9 @@ nginx -t && nginx -s reload
 ### 1. 서비스 상태 확인
 
 ```bash
+# Authelia OIDC discovery 확인
+curl https://dify.example.com/auth/.well-known/openid-configuration
+
 # dify-sso 헬스체크
 curl https://dify.example.com/health?detail=true
 
@@ -331,7 +370,7 @@ curl https://dify.example.com/console/api/system-features
 ### 2. 로그인 흐름 테스트
 
 1. 브라우저에서 `https://dify.example.com` 접속
-2. **Dify 로그인 화면이 보이지 않고** 바로 Authelia 로그인 화면으로 이동되는지 확인
+2. **Dify 로그인 화면이 보이지 않고** `dify.example.com/auth/...` Authelia 로그인 화면으로 자동 이동되는지 확인
 3. LDAP 계정으로 로그인
 4. Dify 콘솔로 자동 리다이렉트되는지 확인
 
@@ -351,13 +390,15 @@ LIMIT 5;
 
 ### "Failed to load OIDC configuration"
 
-- `OIDC_DISCOVERY_URL`이 올바른지 확인
+- `OIDC_DISCOVERY_URL`이 올바른지 확인 (`https://dify.example.com/auth/.well-known/openid-configuration`)
 - dify-sso 컨테이너에서 Authelia에 네트워크 접근 가능한지 확인
 
 ```bash
 # 컨테이너 안에서 테스트
-docker exec dify-sso curl -s https://auth.example.com/.well-known/openid-configuration
+docker exec dify-sso curl -s https://dify.example.com/auth/.well-known/openid-configuration
 ```
+
+> **주의**: dify-sso가 `dify.example.com` 도메인으로 Authelia에 접근하려면, 컨테이너 내부에서 해당 도메인이 resolve 가능해야 합니다. Docker 내부 네트워크에서는 `http://authelia:9091/auth/.well-known/openid-configuration`으로 직접 접근하는 것도 방법입니다. 이 경우 `.env`의 `OIDC_DISCOVERY_URL`을 내부 주소로 설정하세요.
 
 ### "Invalid or expired OAuth state"
 
@@ -368,13 +409,19 @@ docker exec dify-sso curl -s https://auth.example.com/.well-known/openid-configu
 
 - Authelia의 `redirect_uris`에 콜백 URL이 정확히 등록되어 있는지 확인
 - `OIDC_CLIENT_SECRET`이 평문값인지 확인 (해시값이 아님)
-- Authelia 로그에서 상세 에러 확인
+- Authelia 로그에서 상세 에러 확인: `docker logs authelia`
 
 ### 로그인 화면이 여전히 보이는 경우
 
 - Nginx 설정에서 `location = /signin` 블록이 Dify 프록시 블록보다 위에 있는지 확인
 - Nginx 캐시 정리: `nginx -s reload`
 - 브라우저 캐시/쿠키 삭제 후 재시도
+
+### Authelia 페이지가 404인 경우
+
+- Authelia `configuration.yml`에 `server.path: 'auth'`가 설정되어 있는지 확인
+- Nginx의 `location /auth` 블록이 있는지 확인
+- `curl https://dify.example.com/auth/` 로 접근 테스트
 
 ### 사용자가 생성되지 않는 경우
 
