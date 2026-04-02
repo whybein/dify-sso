@@ -104,31 +104,28 @@ identity_providers:
 
 ### client_secret 생성
 
-평문 시크릿을 먼저 정하고 (예: `my-dify-secret`), 아래 방법 중 하나로 해시를 생성합니다.
+평문 시크릿을 먼저 정하고 (예: `my-dify-secret`), argon2id 해시를 생성합니다.
+Authelia 전용 도구가 필요한 것이 아니라, **argon2id 해시를 만들 수 있는 아무 도구**나 사용 가능합니다.
 
-**Docker (모든 OS):**
-```bash
-docker run --rm authelia/authelia:latest \
-  authelia crypto hash generate argon2 --password 'my-dify-secret'
-```
-
-**Linux/macOS (바이너리 직접 다운로드):**
-```bash
-# https://github.com/authelia/authelia/releases 에서 다운로드
-authelia crypto hash generate argon2 --password 'my-dify-secret'
-```
-
-**Windows PowerShell:**
-```powershell
-# https://github.com/authelia/authelia/releases 에서 windows-amd64.zip 다운로드
-.\authelia.exe crypto hash generate argon2 --password 'my-dify-secret'
-```
-
-**Python (모든 OS):**
+**Python (모든 OS — 가장 간편):**
 ```bash
 pip install argon2-cffi
 python -c "from argon2 import PasswordHasher; print(PasswordHasher().hash('my-dify-secret'))"
 ```
+
+**Node.js:**
+```bash
+npm install argon2
+node -e "require('argon2').hash('my-dify-secret').then(console.log)"
+```
+
+**Linux (htpasswd/argon2 CLI):**
+```bash
+# argon2-utils 패키지 설치 후
+echo -n 'my-dify-secret' | argon2 "$(openssl rand -base64 16)" -id -e
+```
+
+출력 예시: `$argon2id$v=19$m=65536,t=3,p=4$...`
 
 생성된 해시값을 Authelia `client_secret`에 넣고, **평문 값**(`my-dify-secret`)은 dify-sso `.env`의 `OIDC_CLIENT_SECRET`에 사용합니다.
 

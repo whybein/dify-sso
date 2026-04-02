@@ -147,23 +147,15 @@ data:
     # OIDC Provider (for Dify SSO)
     # ====================
     #
-    # Generate client_secret hash (pick one method):
+    # Generate client_secret hash (any tool that produces argon2id):
     #
-    # [Docker] Any OS with Docker:
-    #   docker run --rm authelia/authelia:latest \
-    #     authelia crypto hash generate argon2 --password 'your-plain-secret'
-    #
-    # [Linux/macOS] Using authelia binary:
-    #   # Download: https://github.com/authelia/authelia/releases
-    #   authelia crypto hash generate argon2 --password 'your-plain-secret'
-    #
-    # [Windows PowerShell] Using authelia binary:
-    #   # Download authelia-vX.X.X-windows-amd64.zip from releases
-    #   .\authelia.exe crypto hash generate argon2 --password 'your-plain-secret'
-    #
-    # [Python] Any OS with Python:
-    #   pip install argon2-cffi
+    # [Python] pip install argon2-cffi
     #   python -c "from argon2 import PasswordHasher; print(PasswordHasher().hash('your-plain-secret'))"
+    #
+    # [Node.js] npm install argon2
+    #   node -e "require('argon2').hash('your-plain-secret').then(console.log)"
+    #
+    # [Linux] echo -n 'your-plain-secret' | argon2 "$(openssl rand -base64 16)" -id -e
     #
     # Use the plain secret in dify-sso .env (OIDC_CLIENT_SECRET)
     # Use the generated hash below in client_secret
