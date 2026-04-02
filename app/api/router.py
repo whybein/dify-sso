@@ -47,7 +47,7 @@ def health_check():
     return health_status
 
 
-# 处理错误
+# Error handlers
 @api.errorhandler(404)
 def not_found_error(error):
     return jsonify({"error": "Not found"}), 404
@@ -58,5 +58,5 @@ def internal_error(error):
     return jsonify({"error": "Internal server error"}), 500
 
 
-# 导入endpoints
+# Import endpoints
 from .dify import sso, enterprise, webapp, workspace  # noqa: F401

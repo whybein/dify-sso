@@ -1,3 +1,4 @@
+import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 
@@ -22,10 +23,14 @@ class TokenService:
     def real_cookie_name(cookie_name: str) -> str:
         return "__Host-" + cookie_name if TokenService.is_secure() else cookie_name
 
-    # 生成refresh token
     @staticmethod
     def generate_refresh_token() -> str:
         return secrets.token_hex(64)
+
+    @staticmethod
+    def _hash_token(token: str) -> str:
+        """Hash a token with SHA-256 for secure storage in Redis."""
+        return hashlib.sha256(token.encode()).hexdigest()
 
     @staticmethod
     def generate_csrf_token(user_id: str) -> str:
@@ -36,18 +41,17 @@ class TokenService:
         }
         return PassportService().issue(payload)
 
-    # 存储refresh token到Redis
     @staticmethod
     def store_refresh_token(refresh_token: str, account_id: str) -> None:
-        refresh_token_key = f"{config.REFRESH_TOKEN_PREFIX}{refresh_token}"
+        """Store refresh token hash in Redis (never store raw token)."""
+        token_hash = TokenService._hash_token(refresh_token)
+        refresh_token_key = f"{config.REFRESH_TOKEN_PREFIX}{token_hash}"
         account_refresh_token_key = f"{config.ACCOUNT_REFRESH_TOKEN_PREFIX}{account_id}"
 
-        # 设置过期时间
         refresh_token_expiry = timedelta(days=int(config.REFRESH_TOKEN_EXPIRE_DAYS))
 
-        # 存储到Redis
         redis_client.setex(refresh_token_key, refresh_token_expiry, account_id)
-        redis_client.setex(account_refresh_token_key, refresh_token_expiry, refresh_token)
+        redis_client.setex(account_refresh_token_key, refresh_token_expiry, token_hash)
 
     @staticmethod
     def set_access_token_to_cookie(response: Response, token: str, samesite: str = "Lax"):

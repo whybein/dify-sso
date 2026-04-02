@@ -19,7 +19,7 @@ def create_app(name: str) -> Flask:
     if config.DEBUG:
         logging.info("Finished create_app (%s ms)", round((end_time - start_time) * 1000, 2))
 
-    # 启动前检查
+    # Pre-startup check
     check_app_config(app)
 
     return app
@@ -27,7 +27,7 @@ def create_app(name: str) -> Flask:
 
 def check_app_config(app: Flask):
     if not oidc_service.check_oidc_config():
-        raise Exception("OIDC配置不完整，请检查配置文件!")
+        raise Exception("OIDC configuration is incomplete. Please check the config!")
 
 
 def initialize_extensions(app: Flask):

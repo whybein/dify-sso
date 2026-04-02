@@ -144,21 +144,19 @@ def get_app_permission():
     try:
         auth_header = request.headers.get("Authorization")
         if auth_header is None:
-            raise
+            raise ValueError("Missing Authorization header")
         if " " not in auth_header:
-            raise
+            raise ValueError("Malformed Authorization header")
 
         auth_scheme, tk = auth_header.split(None, 1)
-        auth_scheme = auth_scheme.lower()
-        if auth_scheme != "bearer":
-            raise
+        if auth_scheme.lower() != "bearer":
+            raise ValueError("Unsupported auth scheme")
 
         decoded = PassportService().verify(tk)
-        logger.info(f"app_id {app_id} decoded token: {decoded}")
         user_id = decoded.get("end_user_id", decoded.get("user_id", "visitor"))
-    except Exception as e:
-        logger.error(f"get_app_permission error: {e}")
-        pass
+        logger.debug("app_id %s token validated for user_id: %s", app_id, user_id)
+    except Exception:
+        logger.debug("app_id %s: no valid token, treating as visitor", app_id)
 
     access_mode = "public"
     access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
@@ -218,16 +216,16 @@ def get_app_subjects():
 @api.get("/console/api/enterprise/webapp/app/subject/search")
 def search_app_subjects():
     try:
-        # 参数验证和获取
+        # Validate and retrieve parameters
         page = max(1, int(request.args.get("pageNumber", 1)))
-        page_size = min(100, max(1, int(request.args.get("resultsPerPage", 10))))  # 限制页面大小
+        page_size = min(100, max(1, int(request.args.get("resultsPerPage", 10))))  # Limit page size
         keyword = request.args.get("keyword", "").strip()
         logger.info(f"search_app_subjects: page={page}, page_size={page_size}, keyword={keyword}")
 
-        # 构建基础查询条件
+        # Build base query
         base_query = db.session.query(Account).filter(Account.status == AccountStatus.ACTIVE)
 
-        # 添加搜索条件 - 支持姓名和邮箱搜索
+        # Search filter - supports name and email search
         if keyword:
             search_filter = db.or_(
                 Account.name.ilike(f"%{keyword}%"),
@@ -235,10 +233,10 @@ def search_app_subjects():
             )
             base_query = base_query.filter(search_filter)
 
-        # 计算总数和分页数据（使用窗口函数优化）
-        paginated_query = base_query.order_by(Account.name, Account.id)  # 确保排序稳定性
+        # Paginate results with stable ordering
+        paginated_query = base_query.order_by(Account.name, Account.id)
 
-        # 获取总数
+        # Get total count
         total_count = base_query.count()
 
         if total_count == 0:
@@ -249,11 +247,11 @@ def search_app_subjects():
                 "hasMore": False,
             }
 
-        # 分页查询
+        # Paginated query
         offset = (page - 1) * page_size
         users = paginated_query.limit(page_size).offset(offset).all()
 
-        # 构建响应数据
+        # Build response data
         subjects = [
             {
                 "subjectId": str(user.id),
@@ -269,7 +267,7 @@ def search_app_subjects():
             for user in users
         ]
 
-        # 计算分页信息
+        # Calculate pagination info
         total_pages = math.ceil(total_count / page_size)
         has_more = page < total_pages
 
@@ -281,13 +279,13 @@ def search_app_subjects():
         }
 
     except ValueError as e:
-        # 参数类型错误
+        # Parameter type error
         return {
             "error": "Invalid parameter format",
             "message": "pageNumber and resultsPerPage must be valid integers"
         }, 400
     except Exception as e:
-        # 其他异常
+        # Other exceptions
         return {
             "error": "Internal server error",
             "message": "An error occurred while searching subjects"
@@ -422,7 +420,7 @@ def clean_webapp_access_mode():
 # PluginManagerService
 @api.post("/check-credential-policy-compliance")
 def check_credential_policy_compliance():
-    # 示例请求体
+    # Example request body
     # {'dify_credential_id': '0198eabb-3b2c-793e-a491-3ddf5bfc75a6', 'provider': 'langgenius/tongyi/tongyi', 'credential_type': 0}
     data = request.json
     logger.info(f"check_credential_policy_compliance called with data: {data}")

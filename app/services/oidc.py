@@ -1,4 +1,8 @@
+import base64
+import hashlib
 import logging
+import re
+import secrets
 from datetime import timedelta
 from typing import Dict
 from urllib.parse import urlencode, unquote
@@ -16,6 +20,11 @@ from app.services.token import TokenService
 
 logger = logging.getLogger(__name__)
 
+# Email validation pattern (RFC 5322 simplified)
+EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+MAX_EMAIL_LENGTH = 254
+MAX_NAME_LENGTH = 255
+
 
 class OIDCService:
     def __init__(self):
@@ -30,52 +39,101 @@ class OIDCService:
         self.passport_service = PassportService()
         self.token_service = TokenService()
 
-        # 获取OIDC配置
+        # Load OIDC configuration
         self._load_oidc_config()
 
     def _load_oidc_config(self):
-        """加载OIDC配置"""
+        """Load OIDC provider configuration from discovery URL."""
         response = requests.get(self.discovery_url)
         if response.status_code == 200:
             oidc_config = response.json()
             self.authorization_endpoint = oidc_config.get('authorization_endpoint')
             self.token_endpoint = oidc_config.get('token_endpoint')
             self.userinfo_endpoint = oidc_config.get('userinfo_endpoint')
-            logger.debug("OIDC配置加载成功: %s", oidc_config)
+            logger.debug("OIDC configuration loaded successfully: %s", oidc_config)
         else:
-            logger.error("OIDC配置加载失败: %s", response.text)
+            logger.error("Failed to load OIDC configuration: %s", response.text)
             raise Exception("Failed to load OIDC configuration")
 
     def check_oidc_config(self) -> bool:
-        """checks if the OIDC configuration is complete"""
+        """Checks if the OIDC configuration is complete."""
         if not self.authorization_endpoint or not self.token_endpoint or not self.userinfo_endpoint:
             return False
         return True
 
-    def get_login_url(self, redirect_uri_params: str = "") -> str:
-        # 生成登录URL
+    @staticmethod
+    def _generate_pkce_pair() -> tuple[str, str]:
+        """Generate PKCE code_verifier and code_challenge (S256)."""
+        code_verifier = secrets.token_urlsafe(48)  # 64 chars
+        digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
+        code_challenge = base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
+        return code_verifier, code_challenge
+
+    @staticmethod
+    def _generate_state() -> str:
+        """Generate cryptographically random state for CSRF protection."""
+        return secrets.token_urlsafe(32)
+
+    @staticmethod
+    def _generate_nonce() -> str:
+        """Generate cryptographically random nonce for ID token replay protection."""
+        return secrets.token_urlsafe(32)
+
+    def get_login_url(self, redirect_uri_params: str = "") -> tuple[str, str]:
+        """Generate OIDC login URL with CSRF state, PKCE, and nonce.
+
+        Returns:
+            tuple of (login_url, state) - state must be stored server-side for validation
+        """
+        state = self._generate_state()
+        nonce = self._generate_nonce()
+        code_verifier, code_challenge = self._generate_pkce_pair()
+
+        # Store state, nonce, and PKCE verifier in Redis (5 min TTL)
+        state_key = f"oidc_state:{state}"
+        redis_client.setex(state_key, timedelta(minutes=5), f"{nonce}:{code_verifier}")
+
         params = {
             'client_id': self.client_id,
             'response_type': self.response_type,
             'scope': self.scope,
             'redirect_uri': self.redirect_uri,
-            'state': 'random_state'
+            'state': state,
+            'nonce': nonce,
+            'code_challenge': code_challenge,
+            'code_challenge_method': 'S256',
         }
 
         if redirect_uri_params:
-            # 拼接查询参数的时候，需要先使用urldecode解码，然后使用urlencode编码
             params['redirect_uri'] = self.redirect_uri + "?" + unquote(redirect_uri_params)
 
-        return f"{self.authorization_endpoint}?{urlencode(params)}"
+        return f"{self.authorization_endpoint}?{urlencode(params)}", state
 
-    def get_token(self, code: str, redirect_uri_params: str = "") -> Dict:
-        # 获取访问令牌
+    def validate_state(self, state: str) -> tuple[str, str]:
+        """Validate OAuth state and return (nonce, code_verifier). Raises on invalid/expired state."""
+        if not state:
+            raise ValueError("Missing OAuth state parameter")
+
+        state_key = f"oidc_state:{state}"
+        stored = redis_client.get(state_key)
+        if not stored:
+            raise ValueError("Invalid or expired OAuth state")
+
+        # Delete state immediately to prevent replay
+        redis_client.delete(state_key)
+
+        nonce, code_verifier = stored.decode().split(':', 1)
+        return nonce, code_verifier
+
+    def get_token(self, code: str, code_verifier: str, redirect_uri_params: str = "") -> Dict:
+        """Exchange authorization code for tokens, with PKCE verification."""
         data = {
             'grant_type': 'authorization_code',
             'code': code,
             'redirect_uri': self.redirect_uri,
             'client_id': self.client_id,
-            'client_secret': self.client_secret
+            'client_secret': self.client_secret,
+            'code_verifier': code_verifier,
         }
 
         if redirect_uri_params:
@@ -83,44 +141,46 @@ class OIDCService:
 
         response = requests.post(self.token_endpoint, data=data)
         if response.status_code != 200:
-            logger.exception("获取token失败: status_code=%d, response=%s",
-                             response.status_code, response.text)
+            logger.error("Failed to get token: status_code=%d", response.status_code)
             raise Exception("Failed to get token")
         return response.json()
 
     def get_user_info(self, access_token: str) -> Dict:
-        # 获取用户信息
+        """Retrieve user info from OIDC provider."""
         headers = {'Authorization': f'Bearer {access_token}'}
         response = requests.get(self.userinfo_endpoint, headers=headers)
         if response.status_code != 200:
-            logger.exception("获取用户信息失败: status_code=%d, response=%s",
-                             response.status_code, response.text)
+            logger.error("Failed to get user info: status_code=%d", response.status_code)
             raise Exception("Failed to get user info")
         return response.json()
 
-    def bind_account(self, code: str, client_host: str, redirect_uri_params: str = "") -> Account:
-        """binds a user to the system"""
+    def bind_account(self, code: str, client_host: str, code_verifier: str = "", redirect_uri_params: str = "") -> Account:
+        """Bind an OIDC user to the system (create or update account)."""
         try:
-            # 获取访问令牌
-            token_response = self.get_token(code, redirect_uri_params)
+            # Exchange authorization code for access token
+            token_response = self.get_token(code, code_verifier, redirect_uri_params)
             access_token = token_response.get('access_token')
 
-            # 获取用户信息
+            # Get user info from OIDC provider
             user_info = self.get_user_info(access_token)
-            user_name = user_info.get('name')
-            user_email = user_info.get('email')
+            user_name = user_info.get('name', '')
+            user_email = user_info.get('email', '')
             user_roles = user_info.get('roles', [])
-            logger.debug("用户信息: %s", user_info)
+            logger.debug("User info retrieved for email: %s", user_email)
 
-            # 验证必填字段
+            # Validate email
             if not user_email:
-                logger.error("用户邮箱信息缺失: %s", user_info)
                 raise Exception("User email is required")
+            user_email = user_email.strip().lower()
+            if len(user_email) > MAX_EMAIL_LENGTH or not EMAIL_REGEX.match(user_email):
+                raise Exception("Invalid email format")
 
+            # Validate and sanitize name
             if not user_name:
-                user_name = user_email.split('@')[0]  # 使用邮箱前缀作为默认用户名
+                user_name = user_email.split('@')[0]
+            user_name = user_name.strip()[:MAX_NAME_LENGTH]
 
-            # 确定用户角色（按优先级从高到低判断）
+            # Determine user role (priority: admin > editor > normal > default)
             user_role = TenantAccountRole(self.account_default_role) if TenantAccountRole.is_valid_role(
                 self.account_default_role) else TenantAccountRole.NORMAL
             if TenantAccountRole.ADMIN in user_roles:
@@ -130,12 +190,12 @@ class OIDCService:
             elif TenantAccountRole.NORMAL in user_roles:
                 user_role = TenantAccountRole.NORMAL
 
-            # 查找系统用户
+            # Look up existing account
             account = Account.get_by_email(user_email)
 
-            # 如果系统用户不存在，则创建系统用户
+            # Create account if not found
             if not account:
-                logger.info("创建用户: %s, 角色: %s", user_email, user_role)
+                logger.info("Creating user: %s, role: %s", user_email, user_role)
                 account = Account.create(
                     email=user_email,
                     name=user_name,
@@ -143,21 +203,21 @@ class OIDCService:
                 )
                 TenantAccountJoin.create(self.tenant_id, account.id, user_role)
             else:
-                # 如果用户已存在，检查是否属于当前租户
+                # If user exists, check tenant membership
                 tenant_account_join = TenantAccountJoin.get_by_account(
                     self.tenant_id, account.id
                 )
                 if not tenant_account_join:
-                    logger.info("用户 %s 不属于当前租户，创建关联: 角色 %s", user_email, user_role)
+                    logger.info("User %s not in current tenant, creating join: role %s", user_email, user_role)
                     tenant_account_join = TenantAccountJoin.create(self.tenant_id, account.id, user_role)
                 else:
-                    # 更新角色（如果有变化）
+                    # Update role if changed
                     if tenant_account_join.role != user_role:
-                        logger.info("用户角色更新: %s (%s -> %s)", user_email, tenant_account_join.role, user_role)
+                        logger.info("User role updated: %s (%s -> %s)", user_email, tenant_account_join.role, user_role)
                         tenant_account_join.role = user_role
                         db.session.add(tenant_account_join)
 
-            # 更新用户登录信息
+            # Update login info
             account.last_login_at = naive_utc_now()
             account.last_login_ip = client_host
             if account.status != AccountStatus.ACTIVE:
@@ -167,26 +227,26 @@ class OIDCService:
 
             db.session.add(account)
             db.session.commit()
-            logger.info("用户验证成功: %s, 角色: %s", user_email, user_role)
+            logger.info("User authenticated successfully: %s, role: %s", user_email, user_role)
             return account
         except Exception as e:
-            logger.exception("处理用户信息验证时发生错误: %s", str(e))
+            logger.exception("Error during user authentication: %s", str(e))
             raise
 
-    def handle_callback(self, code: str, client_host: str, redirect_uri_params: str = "", app_code: str = "") -> Dict[
-        str, str]:
-        # 处理回调，返回access token和refresh token
+    def handle_callback(self, code: str, client_host: str, code_verifier: str = "",
+                        redirect_uri_params: str = "", app_code: str = "") -> Dict[str, str]:
+        """Handle OIDC callback, return access token and refresh token."""
         try:
-            account = self.bind_account(code, client_host, redirect_uri_params)
+            account = self.bind_account(code, client_host, code_verifier, redirect_uri_params)
 
-            # 生成JWT token
+            # Generate JWT token
             exp_dt = naive_utc_now() + timedelta(minutes=config.ACCESS_TOKEN_EXPIRE_MINUTES)
             exp = int(exp_dt.timestamp())
             account_id = str(account.id)
 
             if redirect_uri_params:
                 auth_type = "internal"
-                logger.debug("处理Web应用登录，app_code=%s", app_code)
+                logger.debug("Processing webapp login, app_code=%s", app_code)
 
                 site = db.session.query(Site).filter(Site.code == app_code).first()
                 if site:
@@ -196,11 +256,11 @@ class OIDCService:
                             auth_type = "public"
                         if access_mode.decode() == "sso_verified":
                             auth_type = "external"
-                        logger.debug("Web应用登录类型: %s => %s", access_mode.decode(), auth_type)
+                        logger.debug("Webapp login type: %s => %s", access_mode.decode(), auth_type)
 
-                # web app 登录
+                # Webapp login payload
                 payload = {
-                    "user_id": account_id,  # 将UUID转换为字符串
+                    "user_id": account_id,
                     "end_user_id": account_id,
                     "session_id": account.email,
                     "auth_type": auth_type,
@@ -217,16 +277,16 @@ class OIDCService:
 
             else:
                 payload = {
-                    "user_id": account_id,  # 将UUID转换为字符串
+                    "user_id": account_id,
                     "exp": exp,
                     "iss": config.EDITION,
                     "sub": "Console API Passport",
                 }
 
-                # 生成access token
+                # Generate access token
                 console_access_token: str = self.passport_service.issue(payload)
 
-                # 生成并存储refresh token
+                # Generate and store refresh token
                 refresh_token = self.token_service.generate_refresh_token()
                 self.token_service.store_refresh_token(refresh_token, account_id)
 
@@ -236,5 +296,5 @@ class OIDCService:
                 }
 
         except Exception as e:
-            logger.exception("处理OIDC回调时发生错误: %s", str(e))
+            logger.exception("Error during OIDC callback: %s", str(e))
             raise

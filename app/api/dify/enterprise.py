@@ -4,7 +4,7 @@ from flask import request
 
 from app.api.router import api
 
-# 模拟企业信息
+# Mock enterprise info
 MOCK_ENTERPRISE_INFO = {
     "sso_enforced_for_signin": True,
     "sso_enforced_for_signin_protocol": "oidc",
@@ -21,7 +21,7 @@ MOCK_ENTERPRISE_INFO = {
     }
 }
 
-# 模拟计费信息
+# Mock billing info
 MOCK_BILLING_INFO = {
     "enabled": True,
     "subscription": {
@@ -58,7 +58,7 @@ MOCK_BILLING_INFO = {
     }
 }
 
-# 系统功能
+# System features
 SYSTEM_FEATURES = {
     "sso_enforced_for_signin": True,
     "sso_enforced_for_signin_protocol": "oidc",
@@ -168,13 +168,13 @@ def get_app_sso_setting():
     }
 
 
-# 计费相关接口
+# Billing endpoints
 @api.get("/subscription/info")
 def get_billing_info():
     return MOCK_BILLING_INFO
 
 
-# 系统功能
+# System features
 @api.get("/console/api/system-features")
 def get_system_features():
     return SYSTEM_FEATURES

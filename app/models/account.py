@@ -188,12 +188,12 @@ class Account(UserMixin, Base):
 
     @classmethod
     def get_by_email(cls, email: str):
-        """通过邮箱查找用户"""
+        """Find account by email."""
         return db.session.query(cls).filter(cls.email == email).first()
 
     @classmethod
     def create(cls, email: str, name: str, avatar: str = None):
-        """创建新用户"""
+        """Create a new account."""
         account = cls(
             email=email,
             name=name,
@@ -274,7 +274,7 @@ class TenantAccountJoin(db.Model):
 
     @classmethod
     def get_by_account(cls, tenant_id: str, account_id: str):
-        """通过账号查找用户"""
+        """Find tenant-account join by tenant and account ID."""
         return db.session.query(cls).filter(cls.tenant_id == tenant_id, cls.account_id == account_id).first()
 
 

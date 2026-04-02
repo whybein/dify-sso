@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel
@@ -22,8 +23,14 @@ class TokenPair(BaseModel):
 
 class AccountService:
     @staticmethod
+    def _hash_token(token: str) -> str:
+        """Hash a token with SHA-256 for secure storage."""
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    @staticmethod
     def _get_refresh_token_key(refresh_token: str) -> str:
-        return f"{config.REFRESH_TOKEN_PREFIX}{refresh_token}"
+        token_hash = AccountService._hash_token(refresh_token)
+        return f"{config.REFRESH_TOKEN_PREFIX}{token_hash}"
 
     @staticmethod
     def _get_account_refresh_token_key(account_id: str) -> str:
@@ -31,10 +38,16 @@ class AccountService:
 
     @staticmethod
     def store_refresh_token(refresh_token: str, account_id: str):
-        redis_client.setex(AccountService._get_refresh_token_key(refresh_token), config.REFRESH_TOKEN_EXPIRE_DAYS,
-                           account_id)
+        token_hash = AccountService._hash_token(refresh_token)
         redis_client.setex(
-            AccountService._get_account_refresh_token_key(account_id), config.REFRESH_TOKEN_EXPIRE_DAYS, refresh_token
+            f"{config.REFRESH_TOKEN_PREFIX}{token_hash}",
+            config.REFRESH_TOKEN_EXPIRE_DAYS,
+            account_id
+        )
+        redis_client.setex(
+            AccountService._get_account_refresh_token_key(account_id),
+            config.REFRESH_TOKEN_EXPIRE_DAYS,
+            token_hash
         )
 
     @staticmethod
