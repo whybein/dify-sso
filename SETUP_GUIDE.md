@@ -104,14 +104,33 @@ identity_providers:
 
 ### client_secret 생성
 
+평문 시크릿을 먼저 정하고 (예: `my-dify-secret`), 아래 방법 중 하나로 해시를 생성합니다.
+
+**Docker (모든 OS):**
 ```bash
-# 평문 시크릿을 먼저 정하고 (예: my-dify-secret)
-# Authelia용 해시 생성:
 docker run --rm authelia/authelia:latest \
   authelia crypto hash generate argon2 --password 'my-dify-secret'
 ```
 
-생성된 해시값을 `client_secret`에 넣고, **평문 값**(`my-dify-secret`)은 dify-sso `.env`에 사용합니다.
+**Linux/macOS (바이너리 직접 다운로드):**
+```bash
+# https://github.com/authelia/authelia/releases 에서 다운로드
+authelia crypto hash generate argon2 --password 'my-dify-secret'
+```
+
+**Windows PowerShell:**
+```powershell
+# https://github.com/authelia/authelia/releases 에서 windows-amd64.zip 다운로드
+.\authelia.exe crypto hash generate argon2 --password 'my-dify-secret'
+```
+
+**Python (모든 OS):**
+```bash
+pip install argon2-cffi
+python -c "from argon2 import PasswordHasher; print(PasswordHasher().hash('my-dify-secret'))"
+```
+
+생성된 해시값을 Authelia `client_secret`에 넣고, **평문 값**(`my-dify-secret`)은 dify-sso `.env`의 `OIDC_CLIENT_SECRET`에 사용합니다.
 
 > **참고**: Authelia v4.38 이상이 필요합니다 (PKCE S256 지원).
 
