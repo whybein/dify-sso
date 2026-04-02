@@ -54,7 +54,7 @@ dify-sso/
 │   ├── app.py                  # Flask 앱 팩토리
 │   ├── __init__.py             # 패키지 초기화
 │   └── main.py                 # 앱 진입점
-├── assets/                     # 정적 리소스 및 이미지
+├── examples/                   # Authelia 샘플 설정 파일
 ├── yaml/                       # 배포 설정 파일
 │   ├── docker-compose.yaml     # Docker Compose 설정
 │   └── k8s-deployment.yaml     # Kubernetes 배포 설정
@@ -162,11 +162,9 @@ python -m app.main
 
 ### 연동 절차
 
-1. SSO 서비스 프로바이더 생성
+1. OIDC 프로바이더 설정 (Authelia 등) — 상세 설정은 [SETUP_GUIDE.md](./SETUP_GUIDE.md) 참조
 
-![image-20250408142818633](./assets/image-20250408142818633.png)
-
-> SSO 프로바이더에 scope `roles`를 설정하면 로그인 시 역할을 부여할 수 있습니다. 기본 역할은 `normal`이며, 다른 역할을 쓰려면 `.env`의 `ACCOUNT_DEFAULT_ROLE`을 원하는 값으로 설정하세요.
+> 프로바이더에 scope `roles`를 설정하면 로그인 시 역할을 부여할 수 있습니다. 기본 역할은 `editor`이며, `.env`의 `ACCOUNT_DEFAULT_ROLE`로 변경 가능합니다.
 
 2. dify-sso 컨테이너 기동
 
