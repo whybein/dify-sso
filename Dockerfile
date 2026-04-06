@@ -1,23 +1,22 @@
 FROM python:3.11-alpine AS running
 
-ENV LANG='en_US.UTF-8' \
-    LANGUAGE='en_US.UTF-8' \
-    TZ='Asia/Seoul' \
-    GUNICORN_WORKERS=2
+ENV LANG='en_US.UTF-8'
+ENV LANGUAGE='en_US.UTF-8'
+ENV TZ='Asia/Seoul'
+ENV GUNICORN_WORKERS=2
 
-RUN apk --update -t --no-cache add tzdata libpq \
-    && ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime \
-    && echo "${TZ}" > /etc/timezone \
-    && apk add --no-cache --virtual .build-deps gcc python3-dev musl-dev postgresql-dev \
-    && pip install --upgrade pip \
-    && pip install --no-cache-dir psycopg2-binary \
-    && apk del --no-cache .build-deps
+RUN apk --update -t --no-cache add tzdata libpq
+RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime
+RUN echo "${TZ}" > /etc/timezone
+RUN apk add --no-cache --virtual .build-deps gcc python3-dev musl-dev postgresql-dev
+RUN pip install --upgrade pip
+RUN pip install --no-cache-dir psycopg2-binary
+RUN apk del --no-cache .build-deps
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN --mount=type=cache,id=pip,target=/root/.cache \
-  pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
