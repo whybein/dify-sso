@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta
 
-from flask import request
+from flask import request, redirect, make_response
 
 from app.api.router import api
+from app.configs import config
 
 # Mock enterprise info
 MOCK_ENTERPRISE_INFO = {
@@ -174,9 +175,36 @@ def get_billing_info():
     return MOCK_BILLING_INFO
 
 
-# System features
+# Admin native login — sets cookie and redirects to Dify login page
+@api.get("/admin-login")
+def admin_login():
+    response = make_response(redirect(f"{config.CONSOLE_WEB_URL}/signin"))
+    response.set_cookie(
+        "dify_admin_mode",
+        value="1",
+        httponly=True,
+        secure=True,
+        samesite="Lax",
+        max_age=300,  # 5 minutes — just enough to complete login
+        path="/",
+    )
+    return response
+
+
+# System features — returns different config based on admin mode cookie
+SYSTEM_FEATURES_ADMIN = {
+    **SYSTEM_FEATURES,
+    "sso_enforced_for_signin": False,
+    "enable_email_code_login": True,
+    "enable_email_password_login": True,
+    "is_allow_register": False,
+}
+
+
 @api.get("/console/api/system-features")
 def get_system_features():
+    if request.cookies.get("dify_admin_mode") == "1":
+        return SYSTEM_FEATURES_ADMIN
     return SYSTEM_FEATURES
 
 
