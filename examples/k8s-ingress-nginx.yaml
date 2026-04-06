@@ -7,14 +7,10 @@
 #   2. dify-sso Deployment/Service 배포
 #   3. 이 Ingress 적용: kubectl apply -f k8s-ingress-nginx.yaml -n llm-dev
 
----
-# ============================================================
-# Ingress 1: /signin 리다이렉트 + dify-sso 경로
-# ============================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: baollm-sso-ing
+  name: baollm-ing
   namespace: llm-dev
   annotations:
     kubernetes.io/ingress.class: nginx
@@ -24,8 +20,6 @@ metadata:
       location = /signin {
           return 302 /console/api/enterprise/sso/oidc/login?is_login=true;
       }
-    # ALB에서 넘어오는 경우 HTTPS 보장
-    nginx.ingress.kubernetes.io/proxy-set-headers: "llm-dev/custom-headers"
     nginx.ingress.kubernetes.io/configuration-snippet: |
       proxy_set_header X-Forwarded-Proto https;
 spec:
@@ -33,7 +27,7 @@ spec:
     - host: baollmdev.oilbank.co.kr
       http:
         paths:
-          # 관리자 로그인 (Dify 기본 이메일/비밀번호)
+          # ── dify-sso: Exact 경로 ──
           - path: /admin-login
             pathType: Exact
             backend:
@@ -41,86 +35,6 @@ spec:
                 name: dify-sso-svc
                 port:
                   number: 8000
-          # SSO 인증 엔드포인트
-          - path: /console/api/enterprise/sso(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: dify-sso-svc
-                port:
-                  number: 8000
-          # Enterprise workspace
-          - path: /console/api/enterprise/workspace(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: dify-sso-svc
-                port:
-                  number: 8000
-          # Enterprise webapp
-          - path: /console/api/enterprise/webapp(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: dify-sso-svc
-                port:
-                  number: 8000
-          # WebApp SSO
-          - path: /api/enterprise/sso(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: dify-sso-svc
-                port:
-                  number: 8000
-          # WebApp 접근 제어
-          - path: /webapp(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: dify-sso-svc
-                port:
-                  number: 8000
-          - path: /app-sso-setting(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: dify-sso-svc
-                port:
-                  number: 8000
-          - path: /sso(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: dify-sso-svc
-                port:
-                  number: 8000
-          - path: /check-credential-policy-compliance
-            pathType: Exact
-            backend:
-              service:
-                name: dify-sso-svc
-                port:
-                  number: 8000
-
----
-# ============================================================
-# Ingress 2: dify-sso Exact 경로 (system-features, features, info)
-# ============================================================
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: baollm-sso-exact-ing
-  namespace: llm-dev
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header X-Forwarded-Proto https;
-spec:
-  rules:
-    - host: baollmdev.oilbank.co.kr
-      http:
-        paths:
           - path: /console/api/system-features
             pathType: Exact
             backend:
@@ -142,25 +56,66 @@ spec:
                 name: dify-sso-svc
                 port:
                   number: 8000
+          - path: /check-credential-policy-compliance
+            pathType: Exact
+            backend:
+              service:
+                name: dify-sso-svc
+                port:
+                  number: 8000
 
----
-# ============================================================
-# Ingress 3: Authelia (/auth 경로)
-# ============================================================
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: baollm-authelia-ing
-  namespace: llm-dev
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header X-Forwarded-Proto https;
-spec:
-  rules:
-    - host: baollmdev.oilbank.co.kr
-      http:
-        paths:
+          # ── dify-sso: Regex 경로 ──
+          - path: /console/api/enterprise/sso(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-svc
+                port:
+                  number: 8000
+          - path: /console/api/enterprise/workspace(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-svc
+                port:
+                  number: 8000
+          - path: /console/api/enterprise/webapp(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-svc
+                port:
+                  number: 8000
+          - path: /api/enterprise/sso(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-svc
+                port:
+                  number: 8000
+          - path: /webapp(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-svc
+                port:
+                  number: 8000
+          - path: /app-sso-setting(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-svc
+                port:
+                  number: 8000
+          - path: /sso(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-svc
+                port:
+                  number: 8000
+
+          # ── Authelia ──
           - path: /auth
             pathType: Prefix
             backend:
@@ -169,24 +124,7 @@ spec:
                 port:
                   number: 9091
 
----
-# ============================================================
-# Ingress 4: Dify 본체 (기존 서비스 - 우선순위 낮음)
-# ============================================================
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: baollm-dify-ing
-  namespace: llm-dev
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header X-Forwarded-Proto https;
-spec:
-  rules:
-    - host: baollmdev.oilbank.co.kr
-      http:
-        paths:
+          # ── Dify 본체 ──
           - path: /console/api
             pathType: Prefix
             backend:
