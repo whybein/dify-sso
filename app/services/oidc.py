@@ -211,8 +211,10 @@ class OIDCService:
                     logger.info("User %s not in current tenant, creating join: role %s", user_email, user_role)
                     tenant_account_join = TenantAccountJoin.create(self.tenant_id, account.id, user_role)
                 else:
-                    # Update role if changed
-                    if tenant_account_join.role != user_role:
+                    # Update role if changed, but never downgrade owner
+                    if tenant_account_join.role == TenantAccountRole.OWNER:
+                        logger.debug("Skipping role update for owner: %s", user_email)
+                    elif tenant_account_join.role != user_role:
                         logger.info("User role updated: %s (%s -> %s)", user_email, tenant_account_join.role, user_role)
                         tenant_account_join.role = user_role
                         db.session.add(tenant_account_join)
