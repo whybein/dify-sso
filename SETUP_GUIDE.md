@@ -9,9 +9,12 @@ Authelia는 별도 서브도메인 없이 **경로 기반** (`dify.example.com/a
 - Dify 접속 시 로그인하지 않은 상태면 **Authelia로 자동 리다이렉트**
 - Authelia에서 LDAP 계정으로 로그인하면 **Dify에 자동 로그인/사용자 생성**
 - Dify 자체 로그인 화면은 **보이지 않음** (SSO 단일 로그인)
+- 관리자는 `/admin-login` 경로로 **Dify 기본 로그인**(이메일/비밀번호) 사용 가능
 - 모든 서비스가 **하나의 도메인** (`dify.example.com`)에서 동작
 
 ## 전체 흐름
+
+### 일반 사용자 (SSO/LDAP)
 
 ```
 사용자 브라우저          Nginx              dify-sso           Authelia(/auth)    Dify
@@ -34,6 +37,22 @@ Authelia는 별도 서브도메인 없이 **경로 기반** (`dify.example.com/a
 ```
 
 **사용자가 보는 화면: Authelia 로그인 화면 1개뿐**
+
+### 관리자 (Dify 기본 로그인)
+
+```
+관리자 브라우저                dify-sso                 Dify
+     │                          │                       │
+     │─── /admin-login ────────>│                       │
+     │<── 쿠키 설정 + 302 ────────│                       │
+     │─── /signin ─────────────>│                       │
+     │    (system-features 호출) │                       │
+     │<── 이메일/비밀번호 활성화 ───│                       │
+     │─── 이메일/비밀번호 입력 ────────────────────────────>│
+     │<── JWT 토큰 + 로그인 ──────────────────────────────│
+```
+
+**관리자 접속 URL: `https://dify.example.com/admin-login`**
 
 ---
 
@@ -81,6 +100,8 @@ server:
 
 ### OIDC 클라이언트 등록
 
+Authelia `configuration.yml`의 `identity_providers` 섹션에 Dify를 OIDC 클라이언트로 등록합니다.
+
 ```yaml
 identity_providers:
   oidc:
@@ -104,30 +125,40 @@ identity_providers:
 
 ### client_secret 생성
 
-평문 시크릿을 먼저 정하고 (예: `my-dify-secret`), argon2id 해시를 생성합니다.
-Authelia 전용 도구가 필요한 것이 아니라, **argon2id 해시를 만들 수 있는 아무 도구**나 사용 가능합니다.
+평문 시크릿을 먼저 생성하고, argon2id 해시를 만듭니다.
+
+**평문 시크릿 생성:**
+```bash
+# Linux/macOS
+openssl rand -hex 16
+
+# Windows PowerShell
+$b = New-Object byte[] 16; [System.Security.Cryptography.RandomNumberGenerator]::Fill($b); ([System.BitConverter]::ToString($b)).Replace('-','').ToLower()
+```
+
+**argon2id 해시 생성 (아무 도구나 사용 가능):**
 
 **Python (모든 OS — 가장 간편):**
 ```bash
 pip install argon2-cffi
-python -c "from argon2 import PasswordHasher; print(PasswordHasher().hash('my-dify-secret'))"
+python -c "from argon2 import PasswordHasher; print(PasswordHasher().hash('<평문 시크릿>'))"
 ```
 
 **Node.js:**
 ```bash
 npm install argon2
-node -e "require('argon2').hash('my-dify-secret').then(console.log)"
+node -e "require('argon2').hash('<평문 시크릿>').then(console.log)"
 ```
 
-**Linux (htpasswd/argon2 CLI):**
+**Linux (argon2 CLI):**
 ```bash
 # argon2-utils 패키지 설치 후
-echo -n 'my-dify-secret' | argon2 "$(openssl rand -base64 16)" -id -e
+echo -n '<평문 시크릿>' | argon2 "$(openssl rand -base64 16)" -id -e
 ```
 
 출력 예시: `$argon2id$v=19$m=65536,t=3,p=4$...`
 
-생성된 해시값을 Authelia `client_secret`에 넣고, **평문 값**(`my-dify-secret`)은 dify-sso `.env`의 `OIDC_CLIENT_SECRET`에 사용합니다.
+생성된 해시값을 Authelia `client_secret`에 넣고, **평문 값**은 dify-sso `.env`의 `OIDC_CLIENT_SECRET`에 사용합니다.
 
 > **참고**: Authelia v4.38 이상이 필요합니다 (PKCE S256 지원).
 
@@ -143,36 +174,36 @@ cp .env.example .env
 
 ```env
 # ── 서비스 설정 ──
-CONSOLE_WEB_URL=https://dify.example.com
-SECRET_KEY=<Dify의 SECRET_KEY와 반드시 동일>
-TENANT_ID=<1단계에서 확인한 TENANT_ID>
-EDITION=SELF_HOSTED
-ACCOUNT_DEFAULT_ROLE=editor
+CONSOLE_WEB_URL=https://dify.example.com    # [필수] Dify 콘솔 URL
+SECRET_KEY=<Dify의 SECRET_KEY와 반드시 동일>   # [필수] JWT 서명 공유
+TENANT_ID=<1단계에서 확인한 TENANT_ID>         # [필수] 워크스페이스 ID
+EDITION=SELF_HOSTED                          # [선택] 기본값: SELF_HOSTED
+ACCOUNT_DEFAULT_ROLE=editor                  # [선택] 신규 사용자 기본 역할 (기본값: normal)
 
 # ── OIDC 설정 (Authelia - 경로 기반) ──
-OIDC_CLIENT_ID=dify
-OIDC_CLIENT_SECRET=my-dify-secret            # 평문 시크릿 (Authelia에는 해시값 입력)
-OIDC_DISCOVERY_URL=https://dify.example.com/auth/.well-known/openid-configuration
-OIDC_REDIRECT_URI=https://dify.example.com/console/api/enterprise/sso/oidc/callback
-OIDC_SCOPE=openid profile email
-OIDC_RESPONSE_TYPE=code
+OIDC_CLIENT_ID=dify                          # [필수] Authelia에 등록한 client_id
+OIDC_CLIENT_SECRET=<평문 시크릿>               # [필수] 평문 시크릿 (Authelia에는 해시값 입력)
+OIDC_DISCOVERY_URL=https://dify.example.com/auth/.well-known/openid-configuration  # [필수]
+OIDC_REDIRECT_URI=https://dify.example.com/console/api/enterprise/sso/oidc/callback  # [필수]
+OIDC_SCOPE=openid profile email              # [선택] 기본값: openid profile email roles
+OIDC_RESPONSE_TYPE=code                      # [선택] 기본값: code
 
 # ── PostgreSQL (Dify와 동일) ──
-DB_HOST=<dify-db-host>
-DB_PORT=5432
-DB_DATABASE=dify
-DB_USERNAME=<dify-db-user>
-DB_PASSWORD=<dify-db-password>
+DB_HOST=<dify-db-host>                       # [필수]
+DB_PORT=5432                                 # [선택] 기본값: 5432
+DB_DATABASE=dify                             # [선택] 기본값: dify
+DB_USERNAME=<dify-db-user>                   # [필수]
+DB_PASSWORD=<dify-db-password>               # [필수]
 
 # ── Redis (Dify와 동일) ──
-REDIS_HOST=<dify-redis-host>
-REDIS_PORT=6379
-REDIS_PASSWORD=<dify-redis-password>
-REDIS_DB=0
+REDIS_HOST=<dify-redis-host>                 # [필수]
+REDIS_PORT=6379                              # [선택] 기본값: 6379
+REDIS_PASSWORD=<dify-redis-password>         # [선택] 비밀번호 없으면 비워둠
+REDIS_DB=0                                   # [선택] 기본값: 0
 
 # ── 토큰 설정 (선택) ──
-ACCESS_TOKEN_EXPIRE_MINUTES=900
-REFRESH_TOKEN_EXPIRE_DAYS=30
+ACCESS_TOKEN_EXPIRE_MINUTES=900              # [선택] 기본값: 900 (15시간)
+REFRESH_TOKEN_EXPIRE_DAYS=30                 # [선택] 기본값: 30
 ```
 
 > **중요**: `SECRET_KEY`와 DB/Redis는 Dify와 동일해야 합니다. 같은 JWT 토큰과 사용자 DB를 공유합니다.
@@ -181,7 +212,15 @@ REFRESH_TOKEN_EXPIRE_DAYS=30
 
 ## 4단계: dify-sso 배포
 
-### Docker Compose (권장)
+### Docker 이미지 빌드
+
+```bash
+# amd64 서버 환경용 (Mac에서 빌드 시 필수)
+docker build --platform linux/amd64 -t <레지스트리>/dify-sso:1.0.0 .
+docker push <레지스트리>/dify-sso:1.0.0
+```
+
+### Docker Compose
 
 ```yaml
 # docker-compose.yml
@@ -207,22 +246,16 @@ networks:
 docker compose up -d
 ```
 
-### 기존 Dify docker-compose에 추가하는 경우
+### Kubernetes (아코디언)
 
-Dify의 `docker-compose.yml`에 서비스를 추가:
+Deployment + Service 생성:
 
-```yaml
-  dify-sso:
-    build: /path/to/dify-sso
-    ports:
-      - "8000:8000"
-    env_file:
-      - /path/to/dify-sso/.env
-    restart: unless-stopped
-    depends_on:
-      - db
-      - redis
-```
+| 항목 | 값 |
+|------|-----|
+| 이미지 | `<레지스트리>/dify-sso:1.0.0` |
+| 포트 | 8000 |
+| 헬스체크 | `GET /health` |
+| 환경변수 | `.env` 내용을 ConfigMap/Secret으로 |
 
 ### 헬스체크 확인
 
@@ -237,9 +270,37 @@ curl http://localhost:8000/health?detail=true
 
 ---
 
-## 5단계: Nginx 프록시 설정
+## 5단계: 프록시 설정
 
 하나의 도메인(`dify.example.com`)에서 Authelia, dify-sso, Dify를 모두 경로로 분기합니다.
+
+### 방법 A: Nginx Ingress Controller (Kubernetes 환경)
+
+`examples/k8s-ingress-nginx.yaml` 참고. 하나의 Ingress로 모든 라우팅을 처리합니다.
+
+주요 라우팅:
+
+| 경로 | 대상 | 설명 |
+|------|------|------|
+| `/signin` | 302 → SSO 로그인 | server-snippet으로 리다이렉트 |
+| `/admin-login` | dify-sso | 관리자 Dify 기본 로그인 |
+| `/console/api/system-features` | dify-sso | SSO 강제 설정 반환 |
+| `/console/api/enterprise/sso/*` | dify-sso | SSO 인증 엔드포인트 |
+| `/auth/*` | Authelia | OIDC 제공자 |
+| `/console/api/*` | Dify API | Dify 본체 |
+| `/api/*` | Dify API | Dify 본체 |
+| `/triggers/*` | Dify API | 웹훅 트리거 |
+| `/*` | Dify Web | Dify 프론트엔드 |
+
+매칭 우선순위: Exact > Regex > Prefix (긴 경로 > 짧은 경로)
+
+```bash
+kubectl apply -f examples/k8s-ingress-nginx.yaml -n llm-dev
+```
+
+### 방법 B: Nginx 직접 설정 (Docker Compose 환경)
+
+`examples/nginx-sso.conf`의 location 블록을 기존 Dify Nginx 설정에 추가합니다.
 
 ```nginx
 server {
@@ -248,11 +309,7 @@ server {
 
     # ... 기존 SSL 설정 ...
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Authelia (/auth 경로)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    # [0] Authelia — /auth 이하 모든 요청을 Authelia로 프록시
+    # ── Authelia (/auth 경로) ──
     location /auth {
         proxy_pass http://authelia:9091;
         proxy_set_header Host $host;
@@ -261,16 +318,21 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # SSO 설정 (기존 Dify location 블록보다 위에 배치)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    # [1] 로그인 화면 바이패스 — Dify 로그인 페이지 대신 바로 SSO로 이동
+    # ── 로그인 바이패스 → SSO ──
     location = /signin {
         return 302 /console/api/enterprise/sso/oidc/login?is_login=true;
     }
 
-    # [2] SSO 인증 엔드포인트 → dify-sso
+    # ── 관리자 로그인 → Dify 기본 로그인 ──
+    location = /admin-login {
+        proxy_pass http://dify-sso:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # ── SSO 인증 엔드포인트 → dify-sso ──
     location ~ ^/console/api/enterprise/sso/ {
         proxy_pass http://dify-sso:8000;
         proxy_set_header Host $host;
@@ -279,7 +341,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # [3] 시스템 기능 API → dify-sso (SSO 강제 설정 반환)
+    # ── 시스템 기능 API → dify-sso ──
     location = /console/api/system-features {
         proxy_pass http://dify-sso:8000;
         proxy_set_header Host $host;
@@ -288,78 +350,21 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # [4] Features API → dify-sso
-    location = /console/api/features {
-        proxy_pass http://dify-sso:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+    # ... 나머지 dify-sso 경로 (nginx-sso.conf 참고) ...
+
+    # ── Dify 본체 (아래에 위치) ──
+    location /console/api {
+        proxy_pass http://dify-api:5001;
+        # ...
     }
-
-    # [5] Enterprise info → dify-sso
-    location = /info {
-        proxy_pass http://dify-sso:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+    location / {
+        proxy_pass http://dify-web:3000;
+        # ...
     }
-
-    # [6] WebApp SSO 관련 → dify-sso
-    location ~ ^/api/enterprise/sso/ {
-        proxy_pass http://dify-sso:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # [7] WebApp 접근 제어 → dify-sso
-    location ~ ^/(webapp/|app-sso-setting|sso/|check-credential-policy-compliance) {
-        proxy_pass http://dify-sso:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # [8] Workspace API → dify-sso
-    location ~ ^/console/api/enterprise/workspace/ {
-        proxy_pass http://dify-sso:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # [9] WebApp permission/access-mode → dify-sso
-    location ~ ^/console/api/enterprise/webapp/ {
-        proxy_pass http://dify-sso:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Dify 본체 (아래에 위치)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    # location / {
-    #     proxy_pass http://dify-web:3000;
-    #     ...
-    # }
-    # location /console/api {
-    #     proxy_pass http://dify-api:5001;
-    #     ...
-    # }
 }
 ```
 
-> **중요**: `location /auth`, SSO location 블록은 기존 Dify의 `/console/api` 블록보다 **위에** 배치해야 합니다. Nginx는 위에서부터 매칭하므로, SSO/Authelia 요청이 Dify API로 가지 않도록 먼저 잡아야 합니다.
-
-### Nginx 설정 테스트 및 적용
+> **중요**: SSO/Authelia location 블록은 기존 Dify의 `/console/api` 블록보다 **위에** 배치해야 합니다.
 
 ```bash
 nginx -t && nginx -s reload
@@ -385,10 +390,16 @@ curl https://dify.example.com/console/api/system-features
 
 ### 2. 로그인 흐름 테스트
 
+**일반 사용자 (SSO):**
 1. 브라우저에서 `https://dify.example.com` 접속
-2. **Dify 로그인 화면이 보이지 않고** `dify.example.com/auth/...` Authelia 로그인 화면으로 자동 이동되는지 확인
+2. **Dify 로그인 화면이 보이지 않고** Authelia 로그인 화면으로 자동 이동되는지 확인
 3. LDAP 계정으로 로그인
 4. Dify 콘솔로 자동 리다이렉트되는지 확인
+
+**관리자 (Dify 기본 로그인):**
+1. `https://dify.example.com/admin-login` 접속
+2. Dify 이메일/비밀번호 로그인 화면이 표시되는지 확인
+3. 관리자 이메일/비밀번호로 로그인
 
 ### 3. 사용자 생성 확인
 
@@ -445,6 +456,11 @@ docker exec dify-sso curl -s https://dify.example.com/auth/.well-known/openid-co
 - `TENANT_ID`가 올바른지 확인
 - `SECRET_KEY`가 Dify와 동일한지 확인
 
+### exec format error (컨테이너 시작 실패)
+
+- 빌드 시 플랫폼 지정: `docker build --platform linux/amd64 -t dify-sso:1.0.0 .`
+- Mac(arm64)에서 빌드한 이미지를 amd64 서버에서 실행하면 발생
+
 ---
 
 ## 보안 참고사항
@@ -458,6 +474,7 @@ docker exec dify-sso curl -s https://dify.example.com/auth/.well-known/openid-co
 | **Nonce** | ID 토큰 재전송 공격 방지 |
 | **토큰 보호** | 토큰이 URL에 노출되지 않음 (short-lived code 교환 방식) |
 | **Refresh Token 해시** | Redis에 SHA-256 해시로 저장 (Redis 침해 시 토큰 직접 노출 방지) |
+| **Owner 역할 보호** | SSO 로그인 시 owner 역할은 변경되지 않음 (강등 방지) |
 | **CORS 제한** | `CONSOLE_WEB_URL` 도메인만 허용 |
 | **입력 검증** | 이메일 형식/길이 검증, 이름 길이 제한 |
 | **에러 은닉** | 인증 실패 시 내부 에러 메시지가 클라이언트에 노출되지 않음 |
@@ -474,9 +491,23 @@ Authelia에서 사용자에게 roles claim을 설정하면 Dify 역할과 자동
 | `admin` | Admin | 전체 관리자 |
 | `editor` | Editor | 앱 편집 가능 |
 | `normal` | Normal | 읽기 전용 |
+| `dataset_operator` | Dataset Operator | 데이터셋 편집 전용 |
 | (없음) | `ACCOUNT_DEFAULT_ROLE` | .env에서 설정한 기본 역할 |
 
-Authelia에서 roles claim을 설정하지 않으면 `.env`의 `ACCOUNT_DEFAULT_ROLE` (기본값: `editor`)이 적용됩니다.
+Authelia에서 roles claim을 설정하지 않으면 `.env`의 `ACCOUNT_DEFAULT_ROLE` (기본값: `normal`)이 적용됩니다.
+
+> **참고**: Dify의 `owner` 역할은 SSO 로그인으로 변경되지 않습니다. 기존 owner 계정이 SSO로 로그인해도 owner 역할이 유지됩니다.
+
+---
+
+## 관리자 로그인
+
+관리자는 두 가지 방법으로 로그인할 수 있습니다:
+
+1. **SSO 로그인**: LDAP 계정의 `mail` 속성이 Dify 관리자 이메일과 동일하면 기존 관리자 계정으로 로그인됨
+2. **Dify 기본 로그인**: `https://dify.example.com/admin-login` 접속 → 이메일/비밀번호로 로그인
+
+`/admin-login` 접속 시 5분간 유효한 쿠키가 설정되며, 이 쿠키가 있는 동안 Dify 기본 로그인 화면이 표시됩니다. 로그인 완료 후에는 Dify JWT 토큰으로 세션이 유지되므로 쿠키 만료와 무관합니다.
 
 ---
 
