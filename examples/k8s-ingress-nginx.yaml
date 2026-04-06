@@ -153,6 +153,13 @@ spec:
                 name: opencode-api-dev
                 port:
                   number: 5001
+          - path: /triggers
+            pathType: Prefix
+            backend:
+              service:
+                name: opencode-api-dev
+                port:
+                  number: 5001
           - path: /
             pathType: Prefix
             backend:
