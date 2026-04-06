@@ -59,9 +59,12 @@ data:
 
         # User search
         users_filter: '(&(|({username_attribute}={input})({mail_attribute}={input}))(objectClass=person))'
-        username_attribute: 'sAMAccountName'  # AD: 'sAMAccountName', OpenLDAP: 'uid'
-        mail_attribute: 'mail'
-        display_name_attribute: 'displayName'
+
+        # Attributes (4.38+ format)
+        attributes:
+          username: 'sAMAccountName'         # AD: 'sAMAccountName', OpenLDAP: 'uid'
+          mail: 'mail'
+          display_name: 'displayName'
 
         # Group search
         # groups_filter: '(&(member={dn})(objectClass=group))'
@@ -87,11 +90,11 @@ data:
     # ====================
     # Storage (test: sqlite / production: postgres)
     # ====================
-    # For testing (sqlite)
+    # For testing (sqlite) — /data 경로는 PVC/emptyDir로 마운트 필요 (쓰기 가능해야 함)
     storage:
       encryption_key: 'storage-encryption-key-min-32-chars!!'
       local:
-        path: '/config/db.sqlite3'
+        path: '/data/db.sqlite3'
 
     # For production (postgres) - switch after testing
     # storage:
@@ -105,10 +108,10 @@ data:
     # ====================
     # Notification (test: file / production: SMTP)
     # ====================
-    # For testing
+    # For testing — /data 경로는 PVC/emptyDir로 마운트 필요 (쓰기 가능해야 함)
     notifier:
       filesystem:
-        filename: '/config/notification.txt'
+        filename: '/data/notification.txt'
 
     # For production (SMTP) - switch after testing
     # notifier:
@@ -147,20 +150,29 @@ data:
     # OIDC Provider (for Dify SSO)
     # ====================
     #
-    # Generate client_secret hash (any tool that produces argon2id):
+    # 1. Generate RSA key for JWKS:
+    #    openssl genrsa -out private.pem 4096
     #
-    # [Python] pip install argon2-cffi
-    #   python -c "from argon2 import PasswordHasher; print(PasswordHasher().hash('your-plain-secret'))"
+    # 2. Generate client_secret hash (any tool that produces argon2id):
     #
-    # [Node.js] npm install argon2
-    #   node -e "require('argon2').hash('your-plain-secret').then(console.log)"
+    #    [Python] pip install argon2-cffi
+    #      python -c "from argon2 import PasswordHasher; print(PasswordHasher().hash('your-plain-secret'))"
     #
-    # [Linux] echo -n 'your-plain-secret' | argon2 "$(openssl rand -base64 16)" -id -e
+    #    [Node.js] npm install argon2
+    #      node -e "require('argon2').hash('your-plain-secret').then(console.log)"
+    #
+    #    [Linux] echo -n 'your-plain-secret' | argon2 "$(openssl rand -base64 16)" -id -e
     #
     # Use the plain secret in dify-sso .env (OIDC_CLIENT_SECRET)
     # Use the generated hash below in client_secret
     identity_providers:
       oidc:
+        jwks:
+          - key_id: 'main'
+            key: |
+              -----BEGIN RSA PRIVATE KEY-----
+              (paste your private.pem content here)
+              -----END RSA PRIVATE KEY-----
         clients:
           - client_id: 'dify'
             client_name: 'Dify'
