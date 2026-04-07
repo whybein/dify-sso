@@ -1,0 +1,205 @@
+# ALB Ingress Controller 기반 Dify SSO 설정
+# - Nginx Ingress Controller 불필요
+# - /signin 리다이렉트는 dify-sso 코드에서 처리
+#
+# 서비스 이름은 환경에 맞게 수정:
+#   - dify-sso-dev    → dify-sso Service
+#   - authelia-dev    → Authelia Service
+#   - opencode-api-dev → Dify API Service
+#   - opencode-web-dev → Dify Web Service
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hdo-alb-dev-baollm-pri-ing
+  namespace: llm-dev
+  annotations:
+    alb.ingress.kubernetes.io/certificate-arn: >-
+      arn:aws:acm:ap-northeast-2:691729631040:certificate/5edf3af4-c988-4119-b291-fba86ccc5920
+    alb.ingress.kubernetes.io/load-balancer-name: hdo-alb-dev-baollm-pri-ing
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/security-groups: sg-0f2448b709d7d9e53,sg-02b74b90d4b4ea45f
+    alb.ingress.kubernetes.io/tags: Service=opencodewebdev,Name=hdo-alb-dev-baollm-pri-ing
+    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=1800
+    alb.ingress.kubernetes.io/target-type: ip
+    kubernetes.io/ingress.class: alb
+spec:
+  rules:
+    - http:
+        paths:
+          # ── dify-sso 경로 (Dify보다 위에 배치) ──
+
+          # 로그인 리다이렉트 → dify-sso가 SSO로 302
+          - path: /signin
+            pathType: Exact
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # 관리자 로그인 (Dify 기본 이메일/비밀번호)
+          - path: /admin-login
+            pathType: Exact
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # SSO 인증 엔드포인트
+          - path: /console/api/enterprise/sso/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # Enterprise workspace
+          - path: /console/api/enterprise/workspace/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # Enterprise webapp
+          - path: /console/api/enterprise/webapp/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # System features (SSO 강제 설정)
+          - path: /console/api/system-features
+            pathType: Exact
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # Features API
+          - path: /console/api/features
+            pathType: Exact
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # Enterprise info
+          - path: /info
+            pathType: Exact
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # WebApp SSO
+          - path: /api/enterprise/sso/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # WebApp 접근 제어
+          - path: /webapp/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # App SSO setting
+          - path: /app-sso-setting
+            pathType: Exact
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # SSO 경로
+          - path: /sso/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # Credential policy
+          - path: /check-credential-policy-compliance
+            pathType: Exact
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # ── Authelia ──
+          - path: /auth/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: authelia-dev
+                port:
+                  number: 9091
+
+          # ── Dify 본체 ──
+          - path: /console/api/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: opencode-api-dev
+                port:
+                  number: 5001
+
+          - path: /api/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: opencode-api-dev
+                port:
+                  number: 5001
+
+          - path: /files/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: opencode-api-dev
+                port:
+                  number: 5001
+
+          - path: /v1/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: opencode-api-dev
+                port:
+                  number: 5001
+
+          - path: /triggers/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: opencode-api-dev
+                port:
+                  number: 5001
+
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: opencode-web-dev
+                port:
+                  number: 3000
