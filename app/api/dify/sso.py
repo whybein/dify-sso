@@ -14,6 +14,12 @@ from app.services.token import TokenService
 logger = logging.getLogger(__name__)
 
 
+@api.get("/signin")
+def signin_redirect():
+    """Redirect /signin to SSO login (replaces Nginx server-snippet)."""
+    return redirect("/console/api/enterprise/sso/oidc/login?is_login=true")
+
+
 @api.get("/console/api/enterprise/sso/oidc/login")
 def oidc_login():
     is_login = request.args.get("is_login", False)
