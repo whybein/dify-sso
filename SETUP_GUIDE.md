@@ -413,6 +413,118 @@ LIMIT 5;
 
 ---
 
+## 7단계: Sandbox 설정 (코드 노드 실행 환경)
+
+Dify 워크플로우에서 **코드 노드(Code Node)**를 사용하려면 Sandbox 서비스를 별도로 배포해야 합니다.
+Sandbox는 사용자가 작성한 Python/JavaScript 코드를 **격리된 환경**에서 안전하게 실행하는 컨테이너입니다.
+
+> **참고**: dify-api, dify-web만 배포한 상태에서 코드 노드를 실행하면 다음 에러가 발생합니다:
+> `Failed to execute code, which is likely a network issue, please check if the sandbox service is running. (Error: [Errno -2] Name or service not known)`
+
+### Sandbox란?
+
+- Go 언어로 작성된 별도 프로젝트 ([dify-sandbox](https://github.com/langgenius/dify-sandbox))
+- Seccomp를 사용하여 시스템 콜 수준에서 보안 적용
+- CPU, 메모리, 실행 시간 제한으로 안전한 코드 실행 보장
+- 기본적으로 외부 네트워크 접근 차단 (설정으로 허용 가능)
+
+### Kubernetes (아코디언) 배포
+
+아코디언 UI에서 새 워크로드를 추가합니다.
+
+**컨테이너 설정:**
+
+| 항목 | 값 |
+|------|-----|
+| 이미지 | `langgenius/dify-sandbox:latest` |
+| 포트 | `8194` |
+
+**환경변수:**
+
+| 이름 | 값 | 설명 |
+|------|-----|------|
+| `API_KEY` | `dify-sandbox` | dify-api와 통신용 키 |
+| `GIN_MODE` | `release` | 실행 모드 |
+| `WORKER_TIMEOUT` | `15` | 코드 실행 제한 시간(초) |
+| `ENABLE_NETWORK` | `true` | 외부 네트워크 허용 여부 (아래 참고) |
+
+**`ENABLE_NETWORK` 설정 가이드:**
+
+코드 노드 안에서 `requests.get("https://...")` 같은 외부 API 호출이 필요한 경우 `true`, 단순 계산/데이터 가공만 한다면 `false`로 설정합니다. Dify의 HTTP 요청 노드는 dify-api가 직접 처리하므로 이 설정과 무관합니다.
+
+`true`로 설정하면 코드 노드에서 K8s 내부 서비스(DB, Redis 등)에도 접근할 수 있는 SSRF(Server-Side Request Forgery) 위험이 있습니다. 이를 방지하려면 SSRF Proxy(Squid)를 함께 배포하여 내부 IP 접근을 차단할 수 있습니다.
+
+| 상황 | 권장 설정 |
+|------|----------|
+| 코드 노드에서 외부 API 호출 안 함 | `ENABLE_NETWORK=false` (SSRF Proxy 불필요) |
+| 외부 API 호출 필요 + 내부 사용자만 사용 | `ENABLE_NETWORK=true` (SSRF Proxy 없어도 무방) |
+| 외부 API 호출 필요 + 외부 사용자도 접근 | `ENABLE_NETWORK=true` + SSRF Proxy 필수 |
+
+> **현재 환경**: 내부 사용자만 사용하므로 `ENABLE_NETWORK=true`, SSRF Proxy 없이 운영합니다.
+
+**Service 생성:**
+
+| 항목 | 값 |
+|------|-----|
+| 서비스 이름 | `dify-sandbox` |
+| 포트 | `8194 → 8194` |
+| 네임스페이스 | dify-api와 **동일한 네임스페이스** |
+
+### dify-api 환경변수 추가
+
+dify-api 파드에 아래 환경변수를 추가하고 재시작합니다.
+
+| 이름 | 값 | 설명 |
+|------|-----|------|
+| `CODE_EXECUTION_ENDPOINT` | `http://dify-sandbox:8194` | Sandbox 서비스 주소 |
+| `CODE_EXECUTION_API_KEY` | `dify-sandbox` | Sandbox의 `API_KEY`와 동일 |
+
+> **주의**: dify-api와 dify-sandbox가 다른 네임스페이스에 있다면 `http://dify-sandbox.<네임스페이스>.svc.cluster.local:8194` 형태로 지정해야 합니다.
+
+### 동작 확인
+
+Dify 웹 UI → 워크플로우 → 코드 노드 추가 → 아래 코드 실행:
+
+```python
+def main() -> dict:
+    return {"result": "sandbox works!"}
+```
+
+정상 실행되면 Sandbox 연결이 완료된 것입니다.
+
+### 외부 Python 패키지 추가 (선택)
+
+코드 노드에서 추가 라이브러리가 필요한 경우, 커스텀 이미지를 빌드합니다:
+
+```dockerfile
+FROM langgenius/dify-sandbox:latest
+COPY python-requirements.txt /dependencies/python-requirements.txt
+```
+
+```bash
+docker build --platform linux/amd64 -t <레지스트리>/dify-sandbox:custom .
+docker push <레지스트리>/dify-sandbox:custom
+```
+
+### Docker Compose 배포 (참고)
+
+```yaml
+sandbox:
+  image: langgenius/dify-sandbox:latest
+  restart: always
+  environment:
+    API_KEY: dify-sandbox
+    GIN_MODE: release
+    WORKER_TIMEOUT: 15
+    ENABLE_NETWORK: "true"
+  ports:
+    - "8194:8194"
+  networks:
+    - dify-network
+```
+
+---
+
 ## 문제 해결 (Troubleshooting)
 
 ### "Failed to load OIDC configuration"
