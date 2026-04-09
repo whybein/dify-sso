@@ -108,6 +108,26 @@ def oidc_exchange_token():
     return {"access_token": token.decode()}
 
 
+@api.get("/console/api/logout")
+def sso_logout():
+    """Logout from Dify and redirect to Authelia logout to clear SSO session."""
+    # Build Authelia logout URL from OIDC discovery URL
+    # e.g. https://dify.example.com/auth/.well-known/openid-configuration → https://dify.example.com/auth/#/logout
+    discovery_url = config.OIDC_DISCOVERY_URL
+    authelia_base = discovery_url.split("/.well-known")[0] if "/.well-known" in discovery_url else ""
+    authelia_logout_url = f"{authelia_base}/#/logout" if authelia_base else f"{config.CONSOLE_WEB_URL}/auth/#/logout"
+
+    response = redirect(authelia_logout_url)
+
+    # Clear Dify auth cookies
+    is_secure = TokenService.is_secure()
+    for cookie_name in ["access_token", "refresh_token", "csrf_token"]:
+        real_name = TokenService.real_cookie_name(cookie_name)
+        response.set_cookie(real_name, "", expires=0, path="/", httponly=True, secure=is_secure, samesite="Lax")
+
+    return response
+
+
 @api.get("/api/enterprise/sso/oidc/login")
 @api.get("/api/enterprise/sso/members/oidc/login")
 def oidc_login_callback():
