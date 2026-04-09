@@ -214,6 +214,9 @@ class OIDCService:
                     # Update role if changed, but never downgrade owner
                     if tenant_account_join.role == TenantAccountRole.OWNER:
                         logger.debug("Skipping role update for owner: %s", user_email)
+                    elif not user_roles:
+                        # OIDC provider returned no roles — preserve role set in Dify UI
+                        logger.debug("No roles in OIDC response, keeping existing role for: %s", user_email)
                     elif tenant_account_join.role != user_role:
                         logger.info("User role updated: %s (%s -> %s)", user_email, tenant_account_join.role, user_role)
                         tenant_account_join.role = user_role

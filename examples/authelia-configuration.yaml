@@ -179,6 +179,7 @@ data:
             client_secret: '$argon2id$v=19$m=65536,t=3,p=4$...'  # ← Replace with generated hash
             public: false
             authorization_policy: 'two_factor'    # or 'one_factor'
+            consent_mode: 'implicit'               # ← 동의 화면 제거 (내부용)
             redirect_uris:
               - 'https://dify.company.com/console/api/enterprise/sso/oidc/callback'
             scopes:
