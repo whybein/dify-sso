@@ -443,10 +443,10 @@ Sandbox는 사용자가 작성한 Python/JavaScript 코드를 **격리된 환경
 
 | 이름 | 값 | 설명 |
 |------|-----|------|
-| `API_KEY` | `dify-sandbox` | dify-api와 통신용 키 |
-| `GIN_MODE` | `release` | 실행 모드 |
-| `WORKER_TIMEOUT` | `15` | 코드 실행 제한 시간(초) |
-| `ENABLE_NETWORK` | `true` | 외부 네트워크 허용 여부 (아래 참고) |
+| `SANDBOX_API_KEY` | `dify-sandbox` | dify-api와 통신용 키 |
+| `SANDBOX_GIN_MODE` | `release` | 실행 모드 |
+| `SANDBOX_WORKER_TIMEOUT` | `15` | 코드 실행 제한 시간(초) |
+| `SANDBOX_ENABLE_NETWORK` | `true` | 외부 네트워크 허용 여부 (아래 참고) |
 
 **`ENABLE_NETWORK` 설정 가이드:**
 
@@ -620,6 +620,41 @@ Authelia에서 roles claim을 설정하지 않으면 `.env`의 `ACCOUNT_DEFAULT_
 2. **Dify 기본 로그인**: `https://dify.example.com/admin-login` 접속 → 이메일/비밀번호로 로그인
 
 `/admin-login` 접속 시 5분간 유효한 쿠키가 설정되며, 이 쿠키가 있는 동안 Dify 기본 로그인 화면이 표시됩니다. 로그인 완료 후에는 Dify JWT 토큰으로 세션이 유지되므로 쿠키 만료와 무관합니다.
+
+---
+
+## 로그아웃
+
+Dify의 기본 로그아웃은 Dify 토큰만 삭제하고 `/signin`으로 리다이렉트합니다. SSO 환경에서는 Authelia 세션이 살아있기 때문에 **자동으로 다시 로그인**되어 로그아웃이 안 되는 것처럼 보입니다.
+
+이 문제를 해결하기 위해 dify-sso가 `/console/api/logout`을 가로채서 **Dify 쿠키 삭제 + Authelia 로그아웃**을 함께 처리합니다.
+
+### 로그아웃 흐름
+
+```
+사용자 로그아웃 클릭 → dify-sso /console/api/logout
+    → Dify 인증 쿠키 삭제 (access_token, refresh_token, csrf_token)
+    → Authelia /auth/#/logout 으로 리다이렉트
+    → Authelia 세션 종료
+    → 로그인 화면 표시
+```
+
+### Ingress 설정
+
+`/console/api/logout`이 dify-api가 아닌 **dify-sso로 라우팅**되어야 합니다. 기존 `/console/api/*` (dify-api) 보다 **위에** 배치합니다.
+
+```yaml
+# dify-sso 경로에 추가
+- path: /console/api/logout
+  pathType: Exact
+  backend:
+    service:
+      name: dify-sso-dev
+      port:
+        number: 8000
+```
+
+> **참고**: Authelia는 OIDC RP-Initiated Logout을 아직 지원하지 않아서, Authelia 자체 로그아웃 페이지(`/auth/#/logout`)를 사용합니다.
 
 ---
 
