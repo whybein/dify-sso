@@ -1,7 +1,7 @@
 import logging
 import secrets
 
-from flask import request, redirect
+from flask import request, redirect, jsonify
 
 from app.api.router import api
 from app.configs import config
@@ -117,13 +117,16 @@ def sso_logout():
     authelia_base = discovery_url.split("/.well-known")[0] if "/.well-known" in discovery_url else ""
     authelia_logout_url = f"{authelia_base}/#/logout" if authelia_base else f"{config.CONSOLE_WEB_URL}/auth/#/logout"
 
-    response = redirect(authelia_logout_url)
+    response = jsonify({"result": "success", "logout_url": authelia_logout_url})
 
     # Clear Dify auth cookies
     is_secure = TokenService.is_secure()
     for cookie_name in ["access_token", "refresh_token", "csrf_token"]:
         real_name = TokenService.real_cookie_name(cookie_name)
         response.set_cookie(real_name, "", expires=0, path="/", httponly=True, secure=is_secure, samesite="Lax")
+
+    # Clear Authelia session cookie
+    response.set_cookie("authelia_session", "", expires=0, path="/", httponly=True, secure=is_secure, samesite="Lax")
 
     return response
 
