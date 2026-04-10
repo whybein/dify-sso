@@ -32,7 +32,7 @@ def check_permission(app_id: str, user_id: str) -> bool:
         access_mode = access_mode_value.decode()
 
     if access_mode == "public":
-        return True
+        return user_id and user_id != "visitor"
 
     if access_mode == "sso_verified" and user_id and user_id != "visitor":
         return True
