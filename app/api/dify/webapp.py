@@ -151,16 +151,19 @@ def get_app_access_mode():
         if site:
             app_id = site.app_id
     if app_id == "":
-        logger.info(f"app_id is empty, return public")
-        return {"accessMode": "public"}
+        logger.info(f"app_id is empty, return sso_verified")
+        return {"accessMode": "sso_verified"}
     else:
         access_mode = redis_client.get(f"webapp_access_mode:{app_id}")
         if access_mode:
-            logger.info(f"app_id:{app_id}, access_mode: {access_mode.decode()}")
-            return {"accessMode": access_mode.decode()}
+            mode = access_mode.decode()
+            if mode == "public":
+                mode = "sso_verified"
+            logger.info(f"app_id:{app_id}, access_mode: {mode}")
+            return {"accessMode": mode}
         else:
-            logger.info(f"app_id:{app_id}, access_mode not set, return public")
-            return {"accessMode": "public"}
+            logger.info(f"app_id:{app_id}, access_mode not set, return sso_verified")
+            return {"accessMode": "sso_verified"}
 
 
 @api.post("/webapp/access-mode/batch/id")
@@ -172,9 +175,10 @@ def get_webapp_access_mode_code_batch():
     for app_id in appIds:
         access_mode = redis_client.get(f"webapp_access_mode:{app_id}")
         if access_mode:
-            accessModes[app_id] = access_mode.decode()
+            mode = access_mode.decode()
+            accessModes[app_id] = "sso_verified" if mode == "public" else mode
         else:
-            accessModes[app_id] = "public"
+            accessModes[app_id] = "sso_verified"
 
     return {"accessModes": accessModes}
 
@@ -366,21 +370,24 @@ def get_webapp_access_mode_code():
     logger.info(f"get_webapp_access_mode_code: app_code={app_code}")
 
     if app_code == "":
-        logger.info(f"app_code is empty, return public")
-        return {"accessMode": "public"}
+        logger.info(f"app_code is empty, return sso_verified")
+        return {"accessMode": "sso_verified"}
 
     site = db.session.query(Site).filter(Site.code == app_code).first()
     if site:
         access_mode_value = redis_client.get(f"webapp_access_mode:{site.app_id}")
         if access_mode_value:
-            logger.info(f"app_code:{app_code}, access_mode: {access_mode_value.decode()}")
-            return {"accessMode": access_mode_value.decode()}
+            mode = access_mode_value.decode()
+            if mode == "public":
+                mode = "sso_verified"
+            logger.info(f"app_code:{app_code}, access_mode: {mode}")
+            return {"accessMode": mode}
         else:
-            logger.info(f"app_code:{app_code}, access_mode not set, return public")
-            return {"accessMode": "public"}
+            logger.info(f"app_code:{app_code}, access_mode not set, return sso_verified")
+            return {"accessMode": "sso_verified"}
     else:
-        logger.info(f"app_code {app_code} not found, return public")
-        return {"accessMode": "public"}
+        logger.info(f"app_code {app_code} not found, return sso_verified")
+        return {"accessMode": "sso_verified"}
 
 
 @api.get("/webapp/permission")

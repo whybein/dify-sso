@@ -108,7 +108,7 @@ def oidc_exchange_token():
     return {"access_token": token.decode()}
 
 
-@api.get("/console/api/logout")
+@api.post("/console/api/logout")
 def sso_logout():
     """Logout from Dify and redirect to Authelia logout to clear SSO session."""
     # Build Authelia logout URL from OIDC discovery URL
