@@ -1,6 +1,8 @@
 # ALB Ingress Controller 기반 Dify SSO 설정
 # - Nginx Ingress Controller 불필요
 # - /signin 리다이렉트는 dify-sso 코드에서 처리
+# - ALB는 같은 Ingress 내 path 순서를 보장하지 않으므로
+#   dify-sso 경로를 별도 Ingress로 분리하고 group.order로 우선순위 부여
 #
 # 서비스 이름은 환경에 맞게 수정:
 #   - dify-sso-dev    → dify-sso Service
@@ -8,12 +10,15 @@
 #   - opencode-api-dev → Dify API Service
 #   - opencode-web-dev → Dify Web Service
 
+# ── 1. dify-sso 경로 (높은 우선순위) ──
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: hdo-alb-dev-baollm-pri-ing
+  name: hdo-alb-dev-baollm-sso-ing
   namespace: llm-dev
   annotations:
+    alb.ingress.kubernetes.io/group.name: hdo-alb-dev-baollm-pri
+    alb.ingress.kubernetes.io/group.order: "10"
     alb.ingress.kubernetes.io/certificate-arn: >-
       arn:aws:acm:ap-northeast-2:691729631040:certificate/5edf3af4-c988-4119-b291-fba86ccc5920
     alb.ingress.kubernetes.io/load-balancer-name: hdo-alb-dev-baollm-pri-ing
@@ -27,14 +32,12 @@ spec:
   rules:
     - http:
         paths:
-          # ── dify-sso 경로 (Dify보다 위에 배치) ──
-
           # 로그인 리다이렉트 → dify-sso가 SSO로 302
           - path: /signin
             pathType: Exact
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -43,7 +46,7 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -52,7 +55,7 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -61,7 +64,7 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -70,7 +73,7 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -79,7 +82,7 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -88,7 +91,7 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -97,7 +100,7 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -106,7 +109,7 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -115,7 +118,7 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -124,16 +127,16 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
-          # WebApp 접근 제어 (프론트엔드 API) — /api/* 보다 위에 배치 필수
+          # WebApp 접근 제어 (프론트엔드 API) — 별도 Ingress로 /api/*보다 우선 매칭
           - path: /api/webapp/*
             pathType: ImplementationSpecific
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -142,7 +145,7 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -151,7 +154,7 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -160,7 +163,7 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: dify-sso-dev
+                name: authelia-sso-dev
                 port:
                   number: 8000
 
@@ -173,7 +176,29 @@ spec:
                 port:
                   number: 9091
 
-          # ── Dify 본체 ──
+---
+# ── 2. Dify 본체 + Web (낮은 우선순위) ──
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hdo-alb-dev-baollm-pri-ing
+  namespace: llm-dev
+  annotations:
+    alb.ingress.kubernetes.io/group.name: hdo-alb-dev-baollm-pri
+    alb.ingress.kubernetes.io/group.order: "100"
+    alb.ingress.kubernetes.io/certificate-arn: >-
+      arn:aws:acm:ap-northeast-2:691729631040:certificate/5edf3af4-c988-4119-b291-fba86ccc5920
+    alb.ingress.kubernetes.io/load-balancer-name: hdo-alb-dev-baollm-pri-ing
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/security-groups: sg-0f2448b709d7d9e53,sg-02b74b90d4b4ea45f
+    alb.ingress.kubernetes.io/tags: Service=opencodewebdev,Name=hdo-alb-dev-baollm-pri-ing
+    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=1800
+    alb.ingress.kubernetes.io/target-type: ip
+    kubernetes.io/ingress.class: alb
+spec:
+  rules:
+    - http:
+        paths:
           - path: /console/api/*
             pathType: ImplementationSpecific
             backend:
