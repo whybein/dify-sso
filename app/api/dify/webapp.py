@@ -1,4 +1,5 @@
 import math
+import re
 
 from flask import request, jsonify
 
@@ -7,7 +8,60 @@ from app.extensions.ext_redis import redis_client
 from app.models.account import Account, AccountStatus
 from app.models.engine import db
 from app.models.model import Site
+from app.models.organization import Organization
 from app.services.passport import PassportService
+
+# 이름에서 팀명 추출: "홍길동(개발팀)" → "개발팀"
+TEAM_REGEX = re.compile(r'\(([^)]+)\)\s*$')
+
+# 조직 레벨 매핑
+ORG_LEVEL_LABELS = {1: "company", 2: "division", 3: "department", 4: "team"}
+
+
+def extract_team(name: str) -> str:
+    """Extract team name from user name format: '홍길동(개발팀)' → '개발팀'"""
+    match = TEAM_REGEX.search(name or "")
+    return match.group(1) if match else ""
+
+
+def check_permission(app_id: str, user_id: str) -> bool:
+    """Check if a user has permission to access an app based on access mode, accounts, and groups."""
+    access_mode = "public"
+    access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
+    if access_mode_value is not None:
+        access_mode = access_mode_value.decode()
+
+    if access_mode == "public":
+        return True
+
+    if access_mode == "sso_verified" and user_id and user_id != "visitor":
+        return True
+
+    if access_mode == "private_all" and user_id and user_id != "visitor":
+        # Check individual accounts
+        accounts_value = redis_client.get(f"webapp_access_mode:accounts:{app_id}")
+        if accounts_value:
+            accounts = [a for a in accounts_value.decode().split(",") if a]
+            if user_id in accounts:
+                return True
+
+        # Check group membership via organizations table
+        groups_value = redis_client.get(f"webapp_access_mode:groups:{app_id}")
+        if groups_value:
+            group_ids = [g for g in groups_value.decode().split(",") if g]
+            user = db.session.query(Account).filter(Account.id == user_id).first()
+            if user:
+                user_team = extract_team(user.name)
+                if user_team:
+                    # Get user's full org chain: [팀, 부문, 본부, 회사]
+                    org_chain = Organization.get_org_chain_for_team(user_team)
+                    for group_id in group_ids:
+                        # group_id format: "org:조직명"
+                        org_name = group_id.replace("org:", "", 1) if group_id.startswith("org:") else group_id
+                        if org_name in org_chain:
+                            return True
+
+    return False
 
 
 @api.get("/info")
@@ -158,31 +212,9 @@ def get_app_permission():
     except Exception:
         logger.debug("app_id %s: no valid token, treating as visitor", app_id)
 
-    access_mode = "public"
-    access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
-    if access_mode_value is not None:
-        access_mode = access_mode_value.decode()
-
-    if access_mode == "public":
-        logger.info(f"app_id {app_id} is public, access granted")
-        return {"result": True}
-
-    if access_mode in ["private_all", "sso_verified"] and user_id != "visitor":
-        logger.info(f"app_id {app_id} is private_all or sso_verified, user_id {user_id} is not visitor, access granted")
-        return {"result": True}
-    else:
-        accounts_value = redis_client.get(f"webapp_access_mode:accounts:{app_id}")
-        if accounts_value:
-            accounts = accounts_value.decode().split(",")
-            if user_id in accounts:
-                logger.info(f"app_id {app_id} has accounts set, user_id {user_id} is in accounts, access granted")
-                return {"result": True}
-            else:
-                logger.info(f"app_id {app_id} has accounts set, user_id {user_id} is not in accounts, access denied")
-                return {"result": False}
-        else:
-            logger.info(f"app_id {app_id} has no accounts set, access denied")
-            return {"result": False}
+    result = check_permission(app_id, user_id)
+    logger.info(f"app_id {app_id} user_id {user_id} permission: {result}")
+    return {"result": result}
 
 
 @api.get("/console/api/enterprise/webapp/app/subjects")
@@ -210,7 +242,20 @@ def get_app_subjects():
             "avatarUrl": ""
         })
 
-    return {"groups": [], "members": members}
+    # Get groups assigned to this app
+    groups_value = redis_client.get(f"webapp_access_mode:groups:{app_id}")
+    groups = []
+    if groups_value:
+        group_ids = [g for g in groups_value.decode().split(",") if g]
+        for group_id in group_ids:
+            # group_id format: "org:조직명"
+            org_name = group_id.replace("org:", "", 1) if group_id.startswith("org:") else group_id
+            groups.append({
+                "id": group_id,
+                "name": org_name,
+            })
+
+    return {"groups": groups, "members": members}
 
 
 @api.get("/console/api/enterprise/webapp/app/subject/search")
@@ -251,8 +296,24 @@ def search_app_subjects():
         offset = (page - 1) * page_size
         users = paginated_query.limit(page_size).offset(offset).all()
 
-        # Build response data
-        subjects = [
+        # Build group subjects from organizations table
+        group_subjects = []
+        if page == 1:
+            orgs = Organization.search_orgs(keyword)
+            for org_name, org_level in orgs:
+                level_label = ORG_LEVEL_LABELS.get(org_level, "")
+                group_id = f"org:{org_name}"
+                group_subjects.append({
+                    "subjectId": group_id,
+                    "subjectType": "group",
+                    "groupData": {
+                        "id": group_id,
+                        "name": f"{org_name} ({level_label})" if level_label else org_name,
+                    }
+                })
+
+        # Build account subjects
+        account_subjects = [
             {
                 "subjectId": str(user.id),
                 "subjectType": "account",
@@ -267,7 +328,10 @@ def search_app_subjects():
             for user in users
         ]
 
-        # Calculate pagination info
+        # Groups first, then accounts
+        subjects = group_subjects + account_subjects
+
+        # Calculate pagination info (accounts only for pagination)
         total_pages = math.ceil(total_count / page_size)
         has_more = page < total_pages
 
@@ -334,31 +398,9 @@ def get_webapp_permission():
             logger.info(f"app_code {app_code} not found")
             return {"result": False}
 
-    access_mode = "public"
-    access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
-    if access_mode_value is not None:
-        access_mode = access_mode_value.decode()
-
-    if access_mode == "public":
-        logger.info(f"app_id {app_id} is public, access granted")
-        return {"result": True}
-
-    if access_mode in ["private_all", "sso_verified"]:
-        logger.info(f"app_id {app_id} is private_all or sso_verified, access granted")
-        return {"result": True}
-    else:
-        accounts_value = redis_client.get(f"webapp_access_mode:accounts:{app_id}")
-        if accounts_value:
-            accounts = accounts_value.decode().split(",")
-            if user_id in accounts:
-                logger.info(f"app_id {app_id} has accounts set, user_id {user_id} is in accounts, access granted")
-                return {"result": True}
-            else:
-                logger.info(f"app_id {app_id} has accounts set, user_id {user_id} is not in accounts, access denied")
-                return {"result": False}
-        else:
-            logger.info(f"app_id {app_id} has no accounts set, access denied")
-            return {"result": False}
+    result = check_permission(app_id, user_id)
+    logger.info(f"get_webapp_permission: app_id {app_id} user_id {user_id} permission: {result}")
+    return {"result": result}
 
 
 @api.post("/webapp/permission/batch")
@@ -376,28 +418,7 @@ def get_webapp_permission_batch():
         else:
             continue
 
-        access_mode = "public"
-        access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
-        if access_mode_value is not None:
-            access_mode = access_mode_value.decode()
-
-        if access_mode == "public":
-            permissions[app_code] = True
-            continue
-
-        if access_mode in ["private_all", "sso_verified"]:
-            permissions[app_code] = True
-            continue
-        else:
-            accounts_value = redis_client.get(f"webapp_access_mode:accounts:{app_id}")
-            if accounts_value:
-                accounts = accounts_value.decode().split(",")
-                if userId in accounts:
-                    permissions[app_code] = True
-                else:
-                    permissions[app_code] = False
-            else:
-                permissions[app_code] = False
+        permissions[app_code] = check_permission(app_id, userId)
 
     return {"permissions": permissions}
 

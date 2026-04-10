@@ -74,6 +74,15 @@ spec:
                 port:
                   number: 8000
 
+          # 로그아웃 (Dify 쿠키 삭제 + Authelia 세션 종료)
+          - path: /console/api/logout
+            pathType: Exact
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
           # System features (SSO 강제 설정)
           - path: /console/api/system-features
             pathType: Exact
@@ -112,6 +121,15 @@ spec:
 
           # WebApp 접근 제어
           - path: /webapp/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dify-sso-dev
+                port:
+                  number: 8000
+
+          # WebApp 접근 제어 (프론트엔드 API) — /api/* 보다 위에 배치 필수
+          - path: /api/webapp/*
             pathType: ImplementationSpecific
             backend:
               service:
