@@ -31,10 +31,7 @@ def check_permission(app_id: str, user_id: str) -> bool:
     if access_mode_value is not None:
         access_mode = access_mode_value.decode()
 
-    if access_mode == "public":
-        return user_id and user_id != "visitor"
-
-    if access_mode == "sso_verified" and user_id and user_id != "visitor":
+    if access_mode in ("public", "sso_verified", "private") and user_id and user_id != "visitor":
         return True
 
     if access_mode == "private_all" and user_id and user_id != "visitor":
@@ -151,19 +148,19 @@ def get_app_access_mode():
         if site:
             app_id = site.app_id
     if app_id == "":
-        logger.info(f"app_id is empty, return sso_verified")
-        return {"accessMode": "sso_verified"}
+        logger.info(f"app_id is empty, return private")
+        return {"accessMode": "private"}
     else:
         access_mode = redis_client.get(f"webapp_access_mode:{app_id}")
         if access_mode:
             mode = access_mode.decode()
             if mode == "public":
-                mode = "sso_verified"
+                mode = "private"
             logger.info(f"app_id:{app_id}, access_mode: {mode}")
             return {"accessMode": mode}
         else:
-            logger.info(f"app_id:{app_id}, access_mode not set, return sso_verified")
-            return {"accessMode": "sso_verified"}
+            logger.info(f"app_id:{app_id}, access_mode not set, return private")
+            return {"accessMode": "private"}
 
 
 @api.post("/webapp/access-mode/batch/id")
@@ -370,8 +367,8 @@ def get_webapp_access_mode_code():
     logger.info(f"get_webapp_access_mode_code: app_code={app_code}")
 
     if app_code == "":
-        logger.info(f"app_code is empty, return sso_verified")
-        return {"accessMode": "sso_verified"}
+        logger.info(f"app_code is empty, return private")
+        return {"accessMode": "private"}
 
     site = db.session.query(Site).filter(Site.code == app_code).first()
     if site:
@@ -379,15 +376,15 @@ def get_webapp_access_mode_code():
         if access_mode_value:
             mode = access_mode_value.decode()
             if mode == "public":
-                mode = "sso_verified"
+                mode = "private"
             logger.info(f"app_code:{app_code}, access_mode: {mode}")
             return {"accessMode": mode}
         else:
-            logger.info(f"app_code:{app_code}, access_mode not set, return sso_verified")
-            return {"accessMode": "sso_verified"}
+            logger.info(f"app_code:{app_code}, access_mode not set, return private")
+            return {"accessMode": "private"}
     else:
-        logger.info(f"app_code {app_code} not found, return sso_verified")
-        return {"accessMode": "sso_verified"}
+        logger.info(f"app_code {app_code} not found, return private")
+        return {"accessMode": "private"}
 
 
 @api.get("/webapp/permission")
