@@ -14,7 +14,15 @@ class SSOConfig(BaseSettings):
     )
 
     OIDC_DISCOVERY_URL: str = Field(
-        description="Discovery URL for the OpenID Connect provider",
+        description="Discovery URL for the OpenID Connect provider (external, used for browser redirects)",
+        default="",
+    )
+
+    OIDC_INTERNAL_DISCOVERY_URL: str = Field(
+        description=(
+            "Internal discovery URL for fetching OIDC config at startup (K8s service URL). "
+            "Falls back to OIDC_DISCOVERY_URL if not set."
+        ),
         default="",
     )
 

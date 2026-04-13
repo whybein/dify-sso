@@ -39,21 +39,42 @@ class OIDCService:
         self.passport_service = PassportService()
         self.token_service = TokenService()
 
+        # Internal URL for pod-to-pod discovery fetch (falls back to external URL)
+        self._internal_discovery_url = config.OIDC_INTERNAL_DISCOVERY_URL or self.discovery_url
+
         # Load OIDC configuration
         self._load_oidc_config()
 
-    def _load_oidc_config(self):
-        """Load OIDC provider configuration from discovery URL."""
-        response = requests.get(self.discovery_url)
-        if response.status_code == 200:
-            oidc_config = response.json()
-            self.authorization_endpoint = oidc_config.get('authorization_endpoint')
-            self.token_endpoint = oidc_config.get('token_endpoint')
-            self.userinfo_endpoint = oidc_config.get('userinfo_endpoint')
-            logger.debug("OIDC configuration loaded successfully: %s", oidc_config)
-        else:
-            logger.error("Failed to load OIDC configuration: %s", response.text)
-            raise Exception("Failed to load OIDC configuration")
+    def _load_oidc_config(self, retries: int = 5, backoff: float = 3.0):
+        """Load OIDC provider configuration from discovery URL.
+
+        Retries with linear backoff to handle cases where the OIDC provider
+        is not yet reachable at startup (e.g. pod scheduling order).
+        """
+        import time
+
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                response = requests.get(self._internal_discovery_url, timeout=10)
+                if response.status_code == 200:
+                    oidc_config = response.json()
+                    self.authorization_endpoint = oidc_config.get('authorization_endpoint')
+                    self.token_endpoint = oidc_config.get('token_endpoint')
+                    self.userinfo_endpoint = oidc_config.get('userinfo_endpoint')
+                    logger.info("OIDC configuration loaded successfully")
+                    return
+                last_error = Exception(f"HTTP {response.status_code}: {response.text}")
+                logger.warning("OIDC config load failed (attempt %d/%d): %s", attempt, retries, last_error)
+            except Exception as e:
+                last_error = e
+                logger.warning("OIDC config load error (attempt %d/%d): %s", attempt, retries, e)
+
+            if attempt < retries:
+                time.sleep(backoff * attempt)
+
+        logger.error("Failed to load OIDC configuration after %d attempts: %s", retries, last_error)
+        raise Exception(f"Failed to load OIDC configuration: {last_error}")
 
     def check_oidc_config(self) -> bool:
         """Checks if the OIDC configuration is complete."""
