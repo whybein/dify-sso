@@ -35,6 +35,11 @@ class AppConfig(BaseSettings):
         default="normal",
     )
 
+    DIFY_API_INTERNAL_URL: str = Field(
+        description="Internal base URL for Dify API (used for reverse proxying console requests).",
+        default="",
+    )
+
     ACCESS_TOKEN_EXPIRE_MINUTES: PositiveInt = Field(
         description="Expiration time for access tokens in minutes",
         default=900,

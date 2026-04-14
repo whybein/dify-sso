@@ -7,8 +7,9 @@ from app.api.router import api, logger
 from app.extensions.ext_redis import redis_client
 from app.models.account import Account, AccountStatus
 from app.models.engine import db
-from app.models.model import Site
+from app.models.model import App, Site
 from app.models.organization import Organization
+from app.services.auth_context import get_current_user_id, get_current_user_role, is_privileged
 from app.services.passport import PassportService
 
 # 이름에서 팀명 추출: "홍길동(개발팀)" → "개발팀"
@@ -118,6 +119,17 @@ def set_app_access_mode():
     if appId == "":
         return {"accessMode": "public", "result": False}
 
+    # editor는 본인이 만든 앱에만 접근제어를 변경할 수 있고, owner/admin은 전부 가능
+    user_id = get_current_user_id(request)
+    role = get_current_user_role(request)
+    if not user_id or not role:
+        return {"error": "unauthorized", "message": "권한이 없습니다."}, 401
+    if not is_privileged(role):
+        app = App.get_by_id(appId)
+        if not app or str(app.created_by) != str(user_id):
+            logger.info("Denying set_app_access_mode: user %s role %s is not owner of app %s", user_id, role, appId)
+            return {"error": "forbidden", "message": "권한이 없습니다."}, 403
+
     accounts = []
     groups = []
     for subject in subjects:
@@ -183,7 +195,6 @@ def get_webapp_access_mode_code_batch():
 @api.get("/api/webapp/permission")
 @api.get("/console/api/enterprise/webapp/permission")
 def get_app_permission():
-    user_id = "visitor"
     app_id = request.args.get("appId", "")
     app_code = request.args.get("appCode", "")
     logger.info(f"get_app_permission: app_id={app_id}, app_code={app_code}")
@@ -196,22 +207,24 @@ def get_app_permission():
             logger.info(f"app_code {app_code} not found")
             return {"result": False}
 
+    # Missing/invalid auth → 401 so the frontend redirects to SSO login
+    # instead of showing a dead-end "no permission" page.
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or " " not in auth_header:
+        return {"error": "unauthorized"}, 401
+
+    auth_scheme, tk = auth_header.split(None, 1)
+    if auth_scheme.lower() != "bearer":
+        return {"error": "unauthorized"}, 401
+
     try:
-        auth_header = request.headers.get("Authorization")
-        if auth_header is None:
-            raise ValueError("Missing Authorization header")
-        if " " not in auth_header:
-            raise ValueError("Malformed Authorization header")
-
-        auth_scheme, tk = auth_header.split(None, 1)
-        if auth_scheme.lower() != "bearer":
-            raise ValueError("Unsupported auth scheme")
-
         decoded = PassportService().verify(tk)
-        user_id = decoded.get("end_user_id", decoded.get("user_id", "visitor"))
-        logger.debug("app_id %s token validated for user_id: %s", app_id, user_id)
     except Exception:
-        logger.debug("app_id %s: no valid token, treating as visitor", app_id)
+        return {"error": "unauthorized"}, 401
+
+    user_id = decoded.get("end_user_id", decoded.get("user_id", ""))
+    if not user_id or user_id == "visitor":
+        return {"error": "unauthorized"}, 401
 
     result = check_permission(app_id, user_id)
     logger.info(f"app_id {app_id} user_id {user_id} permission: {result}")
@@ -297,19 +310,39 @@ def search_app_subjects():
         offset = (page - 1) * page_size
         users = paginated_query.limit(page_size).offset(offset).all()
 
-        # Build group subjects from organizations table
+        # Build group subjects as a tree from organizations table.
+        # Only include groups on the first page; pagination applies to accounts only.
         group_subjects = []
         if page == 1:
-            orgs = Organization.search_orgs(keyword)
-            for org_name, org_level in orgs:
-                level_label = ORG_LEVEL_LABELS.get(org_level, "")
-                group_id = f"org:{org_name}"
+            try:
+                org_rows = Organization.get_tree_rows(keyword)
+            except Exception as org_error:
+                # Table missing or query failed — log and continue with accounts only
+                logger.exception("get_tree_rows failed: %s", org_error)
+                db.session.rollback()
+                org_rows = []
+
+            # Map DB id → "org:<name>" so parentGroupId points at a group we return.
+            id_to_group: dict[str, str] = {
+                row.id: f"org:{row.org_name}" for row in org_rows
+            }
+            included_group_ids: set[str] = set()
+            for row in org_rows:
+                group_id = f"org:{row.org_name}"
+                # Same org_name can appear on multiple rows (company/division share a name);
+                # keep only the first so the tree has no duplicate nodes.
+                if group_id in included_group_ids:
+                    continue
+                included_group_ids.add(group_id)
+
+                parent_group_id = id_to_group.get(row.parent_id) if row.parent_id else None
                 group_subjects.append({
                     "subjectId": group_id,
                     "subjectType": "group",
                     "groupData": {
                         "id": group_id,
-                        "name": f"{org_name} ({level_label})" if level_label else org_name,
+                        "name": row.org_name,
+                        "parentGroupId": parent_group_id,
                     }
                 })
 
@@ -351,6 +384,8 @@ def search_app_subjects():
         }, 400
     except Exception as e:
         # Other exceptions
+        logger.exception("search_app_subjects failed: %s", e)
+        db.session.rollback()
         return {
             "error": "Internal server error",
             "message": "An error occurred while searching subjects"
@@ -401,6 +436,10 @@ def get_webapp_permission():
         else:
             logger.info(f"app_code {app_code} not found")
             return {"result": False}
+
+    # No user_id (visitor) → 401 so the caller triggers SSO login.
+    if not user_id or user_id == "visitor":
+        return {"error": "unauthorized"}, 401
 
     result = check_permission(app_id, user_id)
     logger.info(f"get_webapp_permission: app_id {app_id} user_id {user_id} permission: {result}")

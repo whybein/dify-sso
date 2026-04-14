@@ -1,3 +1,5 @@
+from typing import Optional
+
 from sqlalchemy import String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -5,6 +7,29 @@ from app.libs.helper import generate_string
 from .base import Base
 from .engine import db
 from .types import StringUUID
+
+
+class App(Base):
+    __tablename__ = "apps"
+    __table_args__ = (
+        db.PrimaryKeyConstraint("id", name="app_pkey"),
+    )
+
+    id: Mapped[str] = mapped_column(StringUUID, server_default=db.text("uuid_generate_v4()"))
+    tenant_id: Mapped[str] = mapped_column(StringUUID, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mode: Mapped[str] = mapped_column(String(255), nullable=False)
+    icon_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    icon: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(255), nullable=False, server_default=db.text("'normal'::character varying"))
+    created_by: Mapped[Optional[str]] = mapped_column(StringUUID, nullable=True)
+    updated_by: Mapped[Optional[str]] = mapped_column(StringUUID, nullable=True)
+    created_at: Mapped[object] = mapped_column(db.DateTime, nullable=False, server_default=func.current_timestamp())
+    updated_at: Mapped[object] = mapped_column(db.DateTime, nullable=False, server_default=func.current_timestamp())
+
+    @classmethod
+    def get_by_id(cls, app_id: str) -> Optional["App"]:
+        return db.session.query(cls).filter(cls.id == app_id).first()
 
 
 class Site(Base):

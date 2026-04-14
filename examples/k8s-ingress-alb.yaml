@@ -82,6 +82,15 @@ spec:
                 port:
                   number: 8000
 
+          # 앱 목록 필터링 + editor 수정 제한 (/console/api 보다 경로가 길어 우선 매칭)
+          - path: /console/api/apps
+            pathType: Prefix
+            backend:
+              service:
+                name: authelia-sso-dev
+                port:
+                  number: 8000
+
           # 로그아웃 (Dify 쿠키 삭제 + Authelia 세션 종료)
           - path: /console/api/logout
             pathType: Exact
