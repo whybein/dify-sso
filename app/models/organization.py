@@ -67,3 +67,49 @@ class Organization(Base):
         if exclude_level:
             query = query.filter(cls.org_level != exclude_level)
         return query.order_by(cls.org_level, cls.org_name).all()
+
+    @classmethod
+    def get_tree_rows(cls, keyword: str = ""):
+        """Return org rows for tree rendering: (id, org_name, org_level, parent_id).
+
+        When keyword is empty, returns the entire tree.
+        When keyword is given, returns matched rows plus their full ancestor chain
+        so the tree remains connected (no orphans).
+        """
+        base_cols = (cls.id, cls.org_name, cls.org_level, cls.parent_id)
+
+        if not keyword:
+            return (
+                db.session.query(*base_cols)
+                .order_by(cls.org_level, cls.org_name)
+                .all()
+            )
+
+        matched = (
+            db.session.query(*base_cols)
+            .filter(cls.org_name.ilike(f"%{keyword}%"))
+            .all()
+        )
+        if not matched:
+            return []
+
+        included: dict[str, tuple] = {r.id: r for r in matched}
+
+        # Walk up ancestors to keep the tree connected.
+        pending = {r.parent_id for r in matched if r.parent_id}
+        while pending:
+            parents = (
+                db.session.query(*base_cols)
+                .filter(cls.id.in_(pending))
+                .all()
+            )
+            pending = set()
+            for row in parents:
+                if row.id not in included:
+                    included[row.id] = row
+                    if row.parent_id:
+                        pending.add(row.parent_id)
+
+        rows = list(included.values())
+        rows.sort(key=lambda r: (r.org_level, r.org_name))
+        return rows
