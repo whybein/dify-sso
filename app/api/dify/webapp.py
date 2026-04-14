@@ -4,8 +4,9 @@ import re
 from flask import request, jsonify
 
 from app.api.router import api, logger
+from app.configs import config
 from app.extensions.ext_redis import redis_client
-from app.models.account import Account, AccountStatus
+from app.models.account import Account, AccountStatus, TenantAccountJoin, TenantAccountRole
 from app.models.engine import db
 from app.models.model import App, Site
 from app.models.organization import Organization
@@ -27,6 +28,28 @@ def extract_team(name: str) -> str:
 
 def check_permission(app_id: str, user_id: str) -> bool:
     """Check if a user has permission to access an app based on access mode, accounts, and groups."""
+    # Owner/admin and the app creator always bypass the access check, regardless
+    # of whether access control has been configured on the app.
+    if user_id and user_id != "visitor":
+        try:
+            app = App.get_by_id(app_id)
+            if app and str(app.created_by) == str(user_id):
+                return True
+
+            join = (
+                db.session.query(TenantAccountJoin)
+                .filter(
+                    TenantAccountJoin.tenant_id == config.TENANT_ID,
+                    TenantAccountJoin.account_id == user_id,
+                )
+                .first()
+            )
+            if join and join.role in (TenantAccountRole.OWNER, TenantAccountRole.ADMIN):
+                return True
+        except Exception as e:
+            logger.exception("check_permission bypass lookup failed: %s", e)
+            db.session.rollback()
+
     access_mode = "public"
     access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
     if access_mode_value is not None:

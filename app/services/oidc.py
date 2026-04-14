@@ -253,7 +253,10 @@ class OIDCService:
 
             db.session.add(account)
             db.session.commit()
-            logger.info("User authenticated successfully: %s, role: %s", user_email, user_role)
+
+            effective_join = TenantAccountJoin.get_by_account(self.tenant_id, account.id)
+            effective_role = effective_join.role if effective_join else user_role
+            logger.info("User authenticated successfully: %s, role: %s", user_email, effective_role)
             return account
         except Exception as e:
             logger.exception("Error during user authentication: %s", str(e))

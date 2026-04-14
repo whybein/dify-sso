@@ -204,3 +204,31 @@ def update_app(app_id: str):
 @api.post("/console/api/apps/<string:app_id>/workflows/publish")
 def publish_app_workflow(app_id: str):
     return _mutate_app(app_id, "/workflows/publish", "POST")
+
+
+# --- Pass-through for unhandled /console/api/apps paths ---
+# The Ingress sends the full /console/api/apps Prefix here, so we must forward
+# any request we do not explicitly restrict (app creation, workflow drafts, site
+# settings, model-config, etc.) back to Dify unchanged. Flask picks the most
+# specific matching rule first, so the routes above still win when they apply.
+
+def _proxy_passthrough(path: str):
+    try:
+        upstream = _forward(request.method, path)
+    except Exception as e:
+        logger.exception("Failed to proxy %s %s: %s", request.method, path, e)
+        return {"error": "upstream_unavailable"}, 502
+    return _passthrough_response(upstream)
+
+
+@api.post("/console/api/apps")
+def create_app():
+    return _proxy_passthrough("/console/api/apps")
+
+
+@api.route(
+    "/console/api/apps/<path:subpath>",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+def passthrough_app_subpath(subpath: str):
+    return _proxy_passthrough(f"/console/api/apps/{subpath}")
