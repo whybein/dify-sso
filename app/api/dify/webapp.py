@@ -55,10 +55,14 @@ def check_permission(app_id: str, user_id: str) -> bool:
     if access_mode_value is not None:
         access_mode = access_mode_value.decode()
 
-    if access_mode in ("public", "sso_verified", "private") and user_id and user_id != "visitor":
+    if access_mode in ("public", "sso_verified") and user_id and user_id != "visitor":
         return True
 
-    if access_mode == "private_all" and user_id and user_id != "visitor":
+    # Dify sends 'private' when admin picks "Specific Groups/Members" and
+    # 'private_all' when admin picks "Organization". This project treats
+    # both as the restrict-to-specific-subjects mode, so the account/group
+    # whitelist is enforced regardless of which value the frontend stored.
+    if access_mode in ("private", "private_all") and user_id and user_id != "visitor":
         # Check individual accounts
         accounts_value = redis_client.get(f"webapp_access_mode:accounts:{app_id}")
         if accounts_value:

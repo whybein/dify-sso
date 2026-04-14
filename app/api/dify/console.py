@@ -78,9 +78,10 @@ def _app_accessible(app_id: str, user_id: str, role: str, org_chain: list[str]) 
     access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
     access_mode = access_mode_value.decode() if access_mode_value else "public"
 
-    # When the app has not been restricted to specific subjects, any
-    # authenticated workspace member may see it.
-    if access_mode != "private_all":
+    # 'private' (Specific Groups/Members) and 'private_all' (Organization) are
+    # both treated as restrict-to-whitelist in this project. Everything else
+    # (public, sso_verified, default) is visible to any authenticated user.
+    if access_mode not in ("private", "private_all"):
         return True
 
     accounts_value = redis_client.get(f"webapp_access_mode:accounts:{app_id}")
@@ -231,4 +232,24 @@ def create_app():
     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
 )
 def passthrough_app_subpath(subpath: str):
+    # Block non-permitted users from reaching ANY /console/api/apps/<id>/*
+    # endpoint. Without this gate the console frontend would still be able to
+    # render peripheral panels (api-keys, monitoring, etc.) because those
+    # requests would flow straight through to Dify.
+    user_id = get_current_user_id(request)
+    role = get_current_user_role(request)
+    if not user_id or not role:
+        return {"error": "unauthorized"}, 401
+
+    if not is_privileged(role):
+        app_id = subpath.split("/", 1)[0]
+        if app_id:
+            org_chain = _user_org_chain(user_id)
+            if not _app_accessible(app_id, user_id, role, org_chain):
+                logger.info(
+                    "Denying passthrough: user %s has no access to app %s (%s %s)",
+                    user_id, app_id, request.method, subpath,
+                )
+                return {"error": "forbidden"}, 403
+
     return _proxy_passthrough(f"/console/api/apps/{subpath}")
