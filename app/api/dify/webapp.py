@@ -293,10 +293,29 @@ def search_app_subjects():
         page = max(1, int(request.args.get("pageNumber", 1)))
         page_size = min(100, max(1, int(request.args.get("resultsPerPage", 10))))  # Limit page size
         keyword = request.args.get("keyword", "").strip()
-        logger.info(f"search_app_subjects: page={page}, page_size={page_size}, keyword={keyword}")
+        group_id = request.args.get("groupId", "").strip()
+        logger.info(f"search_app_subjects: page={page}, page_size={page_size}, keyword={keyword}, group_id={group_id}")
 
         # Build base query
         base_query = db.session.query(Account).filter(Account.status == AccountStatus.ACTIVE)
+
+        # Drill-down: restrict to accounts that belong to a specific org (group)
+        if group_id:
+            org_name = group_id.replace("org:", "", 1) if group_id.startswith("org:") else group_id
+            try:
+                team_rows = Organization.get_teams_by_org(org_name)
+            except Exception as org_error:
+                logger.exception("get_teams_by_org failed: %s", org_error)
+                db.session.rollback()
+                team_rows = []
+            team_names = [t[0] for t in team_rows if t and t[0]]
+            if team_names:
+                base_query = base_query.filter(
+                    db.or_(*[Account.name.ilike(f"%({team})%") for team in team_names])
+                )
+            else:
+                # Group resolves to no teams → no members
+                base_query = base_query.filter(db.false())
 
         # Search filter - supports name and email search
         if keyword:
@@ -326,8 +345,9 @@ def search_app_subjects():
 
         # Build group subjects as a tree from organizations table.
         # Only include groups on the first page; pagination applies to accounts only.
+        # Skip groups when drilling into a specific group — caller wants members only.
         group_subjects = []
-        if page == 1:
+        if page == 1 and not group_id:
             try:
                 org_rows = Organization.get_tree_rows(keyword)
             except Exception as org_error:
