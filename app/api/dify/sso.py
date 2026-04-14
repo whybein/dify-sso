@@ -120,11 +120,14 @@ def sso_logout():
         # e.g. http://authelia-dev.llm-dev.svc.cluster.local:9091/auth/.well-known/... → base is everything before /auth/
         authelia_internal_base = internal_discovery.split("/auth/")[0] if "/auth/" in internal_discovery else ""
         if authelia_internal_base:
-            # Try both candidate paths — Authelia may be served at root (/api/logout)
-            # or under the /auth prefix (/auth/api/logout) depending on deployment.
+            # Order matters: when falling back to the public base URL the ALB
+            # routes bare /api/logout to dify-api (which happily returns 200 and
+            # does NOT kill the Authelia session). Try /auth/api/logout first —
+            # it's the correct path in this deployment whether we hit the
+            # internal Authelia service or go back through the ALB.
             candidate_urls = [
-                f"{authelia_internal_base}/api/logout",
                 f"{authelia_internal_base}/auth/api/logout",
+                f"{authelia_internal_base}/api/logout",
             ]
             killed = False
             for url in candidate_urls:
@@ -154,8 +157,24 @@ def sso_logout():
         real_name = TokenService.real_cookie_name(cookie_name)
         response.set_cookie(real_name, "", expires=0, path="/", httponly=True, secure=is_secure, samesite="Lax")
 
-    # Clear Authelia session cookie
+    # Clear Authelia session cookie on BOTH the current host and the parent
+    # domain. Authelia usually sets authelia_session on the parent domain
+    # (e.g. .oilbank.co.kr) so SSO can be shared across subdomains; a delete
+    # scoped only to the exact host leaves the parent-domain cookie behind,
+    # which the browser keeps sending on the next navigation.
+    host = (request.host or "").split(":")[0]
+    parent_domain = ""
+    parts = host.split(".")
+    if len(parts) >= 3:
+        parent_domain = "." + ".".join(parts[-2:])
+    # Current host scope
     response.set_cookie("authelia_session", "", expires=0, path="/", httponly=True, secure=is_secure, samesite="Lax")
+    # Parent domain scope (only when host has at least one subdomain)
+    if parent_domain:
+        response.set_cookie(
+            "authelia_session", "", expires=0, path="/", domain=parent_domain,
+            httponly=True, secure=is_secure, samesite="Lax",
+        )
 
     return response
 
