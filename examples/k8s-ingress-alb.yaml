@@ -1,29 +1,30 @@
-# ALB Ingress Controller 기반 Dify SSO 설정
+# ALB Ingress Controller 기반 Dify SSO 설정 (단일 Ingress)
 # - Nginx Ingress Controller 불필요
 # - /signin 리다이렉트는 dify-sso 코드에서 처리
-# - ALB는 같은 Ingress 내 path 순서를 보장하지 않으므로
-#   dify-sso 경로를 별도 Ingress로 분리하고 group.order로 우선순위 부여
+# - 단일 Ingress 사용: ImplementationSpecific 대신 Prefix pathType 사용
+#   → ALB 컨트롤러가 경로 길이 기준으로 자동 우선순위 정렬
+#   → /api/webapp (12자) > /api (4자) 이므로 dify-sso 경로가 항상 먼저 매칭
+# - ImplementationSpecific + /* 와일드카드는 Prefix와 우선순위 비교 시 동작 불확실
 #
 # 서비스 이름은 환경에 맞게 수정:
-#   - dify-sso-dev    → dify-sso Service
-#   - authelia-dev    → Authelia Service
-#   - opencode-api-dev → Dify API Service
-#   - opencode-web-dev → Dify Web Service
+#   - authelia-sso-dev  → dify-sso Service
+#   - authelia-dev      → Authelia Service
+#   - opencode-api-dev  → Dify API Service
+#   - opencode-web-dev  → Dify Web Service
 
-# ── 1. dify-sso 경로 (높은 우선순위) ──
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: hdo-alb-dev-baollm-sso-ing
+  name: hdo-alb-dev-baollm-pri-ing
   namespace: llm-dev
   annotations:
-    alb.ingress.kubernetes.io/group.name: hdo-alb-dev-baollm-pri
-    alb.ingress.kubernetes.io/group.order: "10"
     alb.ingress.kubernetes.io/certificate-arn: >-
       arn:aws:acm:ap-northeast-2:691729631040:certificate/5edf3af4-c988-4119-b291-fba86ccc5920
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS":443}]'
     alb.ingress.kubernetes.io/load-balancer-name: hdo-alb-dev-baollm-pri-ing
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/security-groups: sg-0f2448b709d7d9e53,sg-02b74b90d4b4ea45f
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
     alb.ingress.kubernetes.io/tags: Service=opencodewebdev,Name=hdo-alb-dev-baollm-pri-ing
     alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=1800
     alb.ingress.kubernetes.io/target-type: ip
@@ -32,6 +33,10 @@ spec:
   rules:
     - http:
         paths:
+          # ── dify-sso 경로 ──
+          # Exact 경로는 pathType 관계없이 항상 최우선
+          # Prefix 경로는 ALB 컨트롤러가 길이 기준 정렬 → 긴 경로가 먼저 매칭
+
           # 로그인 리다이렉트 → dify-sso가 SSO로 302
           - path: /signin
             pathType: Exact
@@ -51,8 +56,8 @@ spec:
                   number: 8000
 
           # SSO 인증 엔드포인트
-          - path: /console/api/enterprise/sso/*
-            pathType: ImplementationSpecific
+          - path: /console/api/enterprise/sso
+            pathType: Prefix
             backend:
               service:
                 name: authelia-sso-dev
@@ -60,8 +65,8 @@ spec:
                   number: 8000
 
           # Enterprise workspace
-          - path: /console/api/enterprise/workspace/*
-            pathType: ImplementationSpecific
+          - path: /console/api/enterprise/workspace
+            pathType: Prefix
             backend:
               service:
                 name: authelia-sso-dev
@@ -69,8 +74,8 @@ spec:
                   number: 8000
 
           # Enterprise webapp
-          - path: /console/api/enterprise/webapp/*
-            pathType: ImplementationSpecific
+          - path: /console/api/enterprise/webapp
+            pathType: Prefix
             backend:
               service:
                 name: authelia-sso-dev
@@ -114,26 +119,26 @@ spec:
                   number: 8000
 
           # WebApp SSO
-          - path: /api/enterprise/sso/*
-            pathType: ImplementationSpecific
+          - path: /api/enterprise/sso
+            pathType: Prefix
             backend:
               service:
                 name: authelia-sso-dev
                 port:
                   number: 8000
 
-          # WebApp 접근 제어
-          - path: /webapp/*
-            pathType: ImplementationSpecific
+          # WebApp 접근 제어 — /api 보다 경로가 길어 자동으로 높은 우선순위
+          - path: /api/webapp
+            pathType: Prefix
             backend:
               service:
                 name: authelia-sso-dev
                 port:
                   number: 8000
 
-          # WebApp 접근 제어 (프론트엔드 API) — 별도 Ingress로 /api/*보다 우선 매칭
-          - path: /api/webapp/*
-            pathType: ImplementationSpecific
+          # WebApp 페이지
+          - path: /webapp
+            pathType: Prefix
             backend:
               service:
                 name: authelia-sso-dev
@@ -150,8 +155,8 @@ spec:
                   number: 8000
 
           # SSO 경로
-          - path: /sso/*
-            pathType: ImplementationSpecific
+          - path: /sso
+            pathType: Prefix
             backend:
               service:
                 name: authelia-sso-dev
@@ -168,71 +173,49 @@ spec:
                   number: 8000
 
           # ── Authelia ──
-          - path: /auth/*
-            pathType: ImplementationSpecific
+          - path: /auth
+            pathType: Prefix
             backend:
               service:
                 name: authelia-dev
                 port:
                   number: 9091
 
----
-# ── 2. Dify 본체 + Web (낮은 우선순위) ──
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: hdo-alb-dev-baollm-pri-ing
-  namespace: llm-dev
-  annotations:
-    alb.ingress.kubernetes.io/group.name: hdo-alb-dev-baollm-pri
-    alb.ingress.kubernetes.io/group.order: "100"
-    alb.ingress.kubernetes.io/certificate-arn: >-
-      arn:aws:acm:ap-northeast-2:691729631040:certificate/5edf3af4-c988-4119-b291-fba86ccc5920
-    alb.ingress.kubernetes.io/load-balancer-name: hdo-alb-dev-baollm-pri-ing
-    alb.ingress.kubernetes.io/scheme: internal
-    alb.ingress.kubernetes.io/security-groups: sg-0f2448b709d7d9e53,sg-02b74b90d4b4ea45f
-    alb.ingress.kubernetes.io/tags: Service=opencodewebdev,Name=hdo-alb-dev-baollm-pri-ing
-    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=1800
-    alb.ingress.kubernetes.io/target-type: ip
-    kubernetes.io/ingress.class: alb
-spec:
-  rules:
-    - http:
-        paths:
-          - path: /console/api/*
-            pathType: ImplementationSpecific
+          # ── Dify 본체 ──
+          - path: /console/api
+            pathType: Prefix
             backend:
               service:
                 name: opencode-api-dev
                 port:
                   number: 5001
 
-          - path: /api/*
-            pathType: ImplementationSpecific
+          - path: /api
+            pathType: Prefix
             backend:
               service:
                 name: opencode-api-dev
                 port:
                   number: 5001
 
-          - path: /files/*
-            pathType: ImplementationSpecific
+          - path: /files
+            pathType: Prefix
             backend:
               service:
                 name: opencode-api-dev
                 port:
                   number: 5001
 
-          - path: /v1/*
-            pathType: ImplementationSpecific
+          - path: /v1
+            pathType: Prefix
             backend:
               service:
                 name: opencode-api-dev
                 port:
                   number: 5001
 
-          - path: /triggers/*
-            pathType: ImplementationSpecific
+          - path: /triggers
+            pathType: Prefix
             backend:
               service:
                 name: opencode-api-dev

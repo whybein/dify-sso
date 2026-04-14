@@ -90,3 +90,6 @@ venv/
 .vscode/
 
 yaml/
+
+# Local environment overrides (should not be baked into image)
+etc/

@@ -1,6 +1,7 @@
 import logging
 import secrets
 
+import requests
 from flask import request, redirect, jsonify
 
 from app.api.router import api
@@ -110,14 +111,26 @@ def oidc_exchange_token():
 
 @api.post("/console/api/logout")
 def sso_logout():
-    """Logout from Dify and redirect to Authelia logout to clear SSO session."""
-    # Build Authelia logout URL from OIDC discovery URL
-    # e.g. https://dify.example.com/auth/.well-known/openid-configuration → https://dify.example.com/auth/#/logout
-    discovery_url = config.OIDC_DISCOVERY_URL
-    authelia_base = discovery_url.split("/.well-known")[0] if "/.well-known" in discovery_url else ""
-    authelia_logout_url = f"{authelia_base}/#/logout" if authelia_base else f"{config.CONSOLE_WEB_URL}/auth/#/logout"
+    """Logout from Dify and invalidate Authelia SSO session."""
+    # Invalidate Authelia session server-side so the user is fully logged out.
+    # Using the internal service URL to avoid hairpin NAT issues with the internal ALB.
+    authelia_session = request.cookies.get("authelia_session", "")
+    if authelia_session:
+        internal_discovery = config.OIDC_INTERNAL_DISCOVERY_URL or config.OIDC_DISCOVERY_URL
+        # e.g. http://authelia-dev.llm-dev.svc.cluster.local:9091/auth/.well-known/... → base is everything before /auth/
+        authelia_internal_base = internal_discovery.split("/auth/")[0] if "/auth/" in internal_discovery else ""
+        if authelia_internal_base:
+            try:
+                requests.post(
+                    f"{authelia_internal_base}/api/logout",
+                    cookies={"authelia_session": authelia_session},
+                    timeout=5,
+                )
+                logger.info("Authelia session invalidated successfully")
+            except Exception as e:
+                logger.warning("Failed to call Authelia logout API: %s", e)
 
-    response = jsonify({"result": "success", "logout_url": authelia_logout_url})
+    response = jsonify({"result": "success"})
 
     # Clear Dify auth cookies
     is_secure = TokenService.is_secure()
