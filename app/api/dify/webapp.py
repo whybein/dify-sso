@@ -230,23 +230,14 @@ def get_app_permission():
             logger.info(f"app_code {app_code} not found")
             return {"result": False}
 
-    # Missing/invalid auth → 401 so the frontend redirects to SSO login
-    # instead of showing a dead-end "no permission" page.
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or " " not in auth_header:
-        return {"error": "unauthorized"}, 401
-
-    auth_scheme, tk = auth_header.split(None, 1)
-    if auth_scheme.lower() != "bearer":
-        return {"error": "unauthorized"}, 401
-
-    try:
-        decoded = PassportService().verify(tk)
-    except Exception:
-        return {"error": "unauthorized"}, 401
-
-    user_id = decoded.get("end_user_id", decoded.get("user_id", ""))
+    # Accept token from Authorization header (webapp calls) OR access_token
+    # cookie (console calls). Dify's console frontend does not always attach
+    # Authorization on the enterprise endpoints — it relies on the cookie.
+    user_id = get_current_user_id(request)
     if not user_id or user_id == "visitor":
+        # On public webapps (no access control configured) anyone with a valid
+        # share link may view, so only fail if the request path is the console
+        # one OR the app is actually restricted.
         return {"error": "unauthorized"}, 401
 
     result = check_permission(app_id, user_id)

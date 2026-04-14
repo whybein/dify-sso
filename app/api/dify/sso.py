@@ -120,15 +120,31 @@ def sso_logout():
         # e.g. http://authelia-dev.llm-dev.svc.cluster.local:9091/auth/.well-known/... → base is everything before /auth/
         authelia_internal_base = internal_discovery.split("/auth/")[0] if "/auth/" in internal_discovery else ""
         if authelia_internal_base:
-            try:
-                requests.post(
-                    f"{authelia_internal_base}/api/logout",
-                    cookies={"authelia_session": authelia_session},
-                    timeout=5,
+            # Try both candidate paths — Authelia may be served at root (/api/logout)
+            # or under the /auth prefix (/auth/api/logout) depending on deployment.
+            candidate_urls = [
+                f"{authelia_internal_base}/api/logout",
+                f"{authelia_internal_base}/auth/api/logout",
+            ]
+            killed = False
+            for url in candidate_urls:
+                try:
+                    resp = requests.post(
+                        url,
+                        cookies={"authelia_session": authelia_session},
+                        timeout=5,
+                    )
+                    logger.info("Authelia logout POST %s -> %s", url, resp.status_code)
+                    if resp.status_code < 400:
+                        killed = True
+                        break
+                except Exception as e:
+                    logger.warning("Failed to call Authelia logout at %s: %s", url, e)
+            if not killed:
+                logger.warning(
+                    "Authelia session may not have been invalidated server-side; "
+                    "browser will still carry authelia_session to next SSO round."
                 )
-                logger.info("Authelia session invalidated successfully")
-            except Exception as e:
-                logger.warning("Failed to call Authelia logout API: %s", e)
 
     response = jsonify({"result": "success"})
 
