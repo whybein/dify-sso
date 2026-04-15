@@ -66,38 +66,45 @@ def _user_org_chain(user_id: str) -> list[str]:
 
 
 def _app_accessible(app_id: str, user_id: str, role: str, org_chain: list[str]) -> bool:
-    """True when the user may see this app in the console list."""
+    """True when the user may see this app in the console list.
+
+    일반 사용자는 다음 경우에만 True:
+    - 본인이 만든 앱
+    - access_mode == sso_verified/public (내부 모두에 공개)
+    - access_mode == private/private_all 이고 accounts/groups 화이트리스트 매치
+    미설정(기본값) 앱은 숨김 — admin 이 명시적으로 access_mode 를 설정해야 노출됨.
+    """
     if is_privileged(role):
         return True
 
-    # The creator always sees their own app.
     app = App.get_by_id(app_id)
     if app and str(app.created_by) == str(user_id):
         return True
 
     access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
-    access_mode = access_mode_value.decode() if access_mode_value else "public"
+    access_mode = access_mode_value.decode() if access_mode_value else None
 
-    # 'private' (Specific Groups/Members) and 'private_all' (Organization) are
-    # both treated as restrict-to-whitelist in this project. Everything else
-    # (public, sso_verified, default) is visible to any authenticated user.
-    if access_mode not in ("private", "private_all"):
+    # 내부 모두에 공개
+    if access_mode in ("sso_verified", "public"):
         return True
 
-    accounts_value = redis_client.get(f"webapp_access_mode:accounts:{app_id}")
-    if accounts_value:
-        accounts = [a for a in accounts_value.decode().split(",") if a]
-        if user_id in accounts:
-            return True
-
-    groups_value = redis_client.get(f"webapp_access_mode:groups:{app_id}")
-    if groups_value and org_chain:
-        group_ids = [g for g in groups_value.decode().split(",") if g]
-        for group_id in group_ids:
-            org_name = group_id.replace("org:", "", 1) if group_id.startswith("org:") else group_id
-            if org_name in org_chain:
+    # 그룹/특정 인원 공개 → 화이트리스트 매치 필요
+    if access_mode in ("private", "private_all"):
+        accounts_value = redis_client.get(f"webapp_access_mode:accounts:{app_id}")
+        if accounts_value:
+            accounts = [a for a in accounts_value.decode().split(",") if a]
+            if user_id in accounts:
                 return True
 
+        groups_value = redis_client.get(f"webapp_access_mode:groups:{app_id}")
+        if groups_value and org_chain:
+            group_ids = [g for g in groups_value.decode().split(",") if g]
+            for group_id in group_ids:
+                org_name = group_id.replace("org:", "", 1) if group_id.startswith("org:") else group_id
+                if org_name in org_chain:
+                    return True
+
+    # 미설정/기타 → 비공개
     return False
 
 
@@ -224,6 +231,13 @@ def _proxy_passthrough(path: str):
 
 @api.post("/console/api/apps")
 def create_app():
+    user_id = get_current_user_id(request)
+    role = get_current_user_role(request)
+    if not user_id or not role:
+        return {"error": "unauthorized"}, 401
+    if not is_privileged(role):
+        logger.info("Denying app creation: user %s role %s lacks privilege", user_id, role)
+        return {"error": "forbidden", "message": "앱 생성 권한이 없습니다."}, 403
     return _proxy_passthrough("/console/api/apps")
 
 
