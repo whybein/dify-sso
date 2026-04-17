@@ -59,3 +59,8 @@ class AppConfig(BaseSettings):
         description="Prefix for account refresh tokens",
         default="account_refresh_token:",
     )
+
+    INTERNAL_API_KEY: str = Field(
+        description="API key for internal server-to-server calls (e.g., Dify workflow → dify-sso).",
+        default="",
+    )
