@@ -369,7 +369,10 @@ def get_app_subjects():
                 "name": org_name,
             })
 
-    return {"groups": groups, "members": members}
+    access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
+    access_mode = access_mode_value.decode() if access_mode_value else "public"
+
+    return {"accessMode": access_mode, "groups": groups, "members": members}
 
 
 @api.get("/console/api/enterprise/webapp/app/subject/search")
