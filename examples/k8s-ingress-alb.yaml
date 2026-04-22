@@ -37,6 +37,16 @@ spec:
           # Exact 경로는 pathType 관계없이 항상 최우선
           # Prefix 경로는 ALB 컨트롤러가 길이 기준 정렬 → 긴 경로가 먼저 매칭
 
+          # /chat/* → dify-sso가 embed origin 쿠키 주입 후 Dify 프론트로 프록시
+          # (ALB는 헤더 기반 쿠키 주입 불가 → SSO 서버에서 처리)
+          - path: /chat
+            pathType: Prefix
+            backend:
+              service:
+                name: authelia-sso-dev
+                port:
+                  number: 8000
+
           # 로그인 리다이렉트 → dify-sso가 SSO로 302
           - path: /signin
             pathType: Exact

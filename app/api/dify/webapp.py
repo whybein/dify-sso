@@ -1,5 +1,6 @@
 import math
 import re
+from urllib.parse import urlparse
 
 from flask import request, jsonify
 
@@ -13,8 +14,57 @@ from app.models.organization import Organization
 from app.services.auth_context import get_current_user_id, get_current_user_role, is_privileged
 from app.services.passport import PassportService
 
-# 이름에서 팀명 추출: "홍길동(개발팀)" → "개발팀"
 TEAM_REGEX = re.compile(r'\(([^)]+)\)\s*$')
+
+
+def _extract_origin(req) -> str:
+    """Return the bare origin (scheme+host) from Origin header, embed cookie, or Referer."""
+    # 1. Origin header (cross-origin deployments)
+    origin = req.headers.get("Origin", "").strip()
+    if origin:
+        return origin.rstrip("/")
+
+    # 2. dify_embed_origin cookie — set by nginx on /chat/ iframe page loads
+    #    contains the full Referer URL of the parent page (e.g. https://customer.com/page)
+    embed_cookie = req.cookies.get("dify_embed_origin", "").strip()
+    if embed_cookie:
+        parsed = urlparse(embed_cookie)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+
+    # 3. Referer header fallback
+    referer = req.headers.get("Referer", "").strip()
+    if referer:
+        parsed = urlparse(referer)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+
+    return ""
+
+
+def _is_embed_origin_allowed(req, app_id: str = "") -> bool:
+    """Return True if the request's Origin/Referer is in the allowed embed origins."""
+    origin = _extract_origin(req)
+    if not origin:
+        return False
+
+    # Per-app allowlist stored by admin
+    if app_id:
+        per_app = redis_client.get(f"webapp_embed_origins:{app_id}")
+        if per_app:
+            for allowed in per_app.decode().split(","):
+                if allowed.strip().rstrip("/") == origin:
+                    return True
+
+    # Global fallback from env
+    global_origins = config.EMBED_ALLOWED_ORIGINS
+    if global_origins:
+        for allowed in global_origins.split(","):
+            if allowed.strip().rstrip("/") == origin:
+                return True
+
+    return False
+
 
 # 조직 레벨 매핑
 ORG_LEVEL_LABELS = {1: "company", 2: "division", 3: "department", 4: "team"}
@@ -167,9 +217,13 @@ def set_app_access_mode():
         elif subject_type == "group":
             groups.append(subject_id)
 
+    # Per-app embed origin allowlist (only meaningful when accessMode == "public")
+    embed_origins = [o.strip() for o in request.json.get("embedAllowedOrigins", []) if o.strip()]
+
     redis_client.set(f"webapp_access_mode:{appId}", access_mode)
     redis_client.set(f"webapp_access_mode:accounts:{appId}", ",".join(accounts))
     redis_client.set(f"webapp_access_mode:groups:{appId}", ",".join(groups))
+    redis_client.set(f"webapp_embed_origins:{appId}", ",".join(embed_origins))
 
     return {"accessMode": access_mode, "result": True}
 
@@ -194,7 +248,11 @@ def get_app_access_mode():
         if access_mode:
             mode = access_mode.decode()
             if mode == "public":
-                mode = "private"
+                # Allow unauthenticated embed only from explicitly allowed origins
+                if _is_embed_origin_allowed(request, app_id=app_id):
+                    logger.info(f"app_id:{app_id}, public embed allowed for origin={_extract_origin(request)}")
+                else:
+                    mode = "private"
             logger.info(f"app_id:{app_id}, access_mode: {mode}")
             return {"accessMode": mode}
         else:
@@ -239,9 +297,13 @@ def get_app_permission():
     # Authorization on the enterprise endpoints — it relies on the cookie.
     user_id = get_current_user_id(request)
     if not user_id or user_id == "visitor":
-        # On public webapps (no access control configured) anyone with a valid
-        # share link may view, so only fail if the request path is the console
-        # one OR the app is actually restricted.
+        # Allow visitor on public apps when the request comes from an allowed embed origin
+        if app_id:
+            access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
+            access_mode = access_mode_value.decode() if access_mode_value else None
+            if access_mode == "public" and _is_embed_origin_allowed(request, app_id=app_id):
+                logger.info(f"get_app_permission: visitor allowed for public app {app_id} origin={_extract_origin(request)}")
+                return {"result": True}
         return {"error": "unauthorized"}, 401
 
     result = check_permission(app_id, user_id)
@@ -445,11 +507,15 @@ def get_webapp_access_mode_code():
 
     site = db.session.query(Site).filter(Site.code == app_code).first()
     if site:
-        access_mode_value = redis_client.get(f"webapp_access_mode:{site.app_id}")
+        app_id = str(site.app_id)
+        access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
         if access_mode_value:
             mode = access_mode_value.decode()
             if mode == "public":
-                mode = "private"
+                if _is_embed_origin_allowed(request, app_id=app_id):
+                    logger.info(f"app_code:{app_code}, public embed allowed for origin={_extract_origin(request)}")
+                else:
+                    mode = "private"
             logger.info(f"app_code:{app_code}, access_mode: {mode}")
             return {"accessMode": mode}
         else:
@@ -475,8 +541,14 @@ def get_webapp_permission():
             logger.info(f"app_code {app_code} not found")
             return {"result": False}
 
-    # No user_id (visitor) → 401 so the caller triggers SSO login.
     if not user_id or user_id == "visitor":
+        # Allow visitor on public apps when the request comes from an allowed embed origin
+        if app_id:
+            access_mode_value = redis_client.get(f"webapp_access_mode:{app_id}")
+            access_mode = access_mode_value.decode() if access_mode_value else None
+            if access_mode == "public" and _is_embed_origin_allowed(request, app_id=app_id):
+                logger.info(f"get_webapp_permission: visitor allowed for public app {app_id} origin={_extract_origin(request)}")
+                return {"result": True}
         return {"error": "unauthorized"}, 401
 
     result = check_permission(app_id, user_id)
@@ -515,6 +587,7 @@ def clean_webapp_access_mode():
     redis_client.delete(f"webapp_access_mode:{appId}")
     redis_client.delete(f"webapp_access_mode:groups:{appId}")
     redis_client.delete(f"webapp_access_mode:accounts:{appId}")
+    redis_client.delete(f"webapp_embed_origins:{appId}")
 
     return {"result": True}
 

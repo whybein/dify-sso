@@ -40,6 +40,12 @@ class AppConfig(BaseSettings):
         default="",
     )
 
+    DIFY_WEB_INTERNAL_URL: str = Field(
+        description="Internal base URL for Dify web frontend (used for /chat/ embed proxy). "
+                    "e.g., http://opencode-web-dev:3000",
+        default="",
+    )
+
     ACCESS_TOKEN_EXPIRE_MINUTES: PositiveInt = Field(
         description="Expiration time for access tokens in minutes",
         default=900,
@@ -62,5 +68,11 @@ class AppConfig(BaseSettings):
 
     INTERNAL_API_KEY: str = Field(
         description="API key for internal server-to-server calls (e.g., Dify workflow → dify-sso).",
+        default="",
+    )
+
+    EMBED_ALLOWED_ORIGINS: str = Field(
+        description="Comma-separated list of allowed origins for unauthenticated embed access on public apps. "
+                    "e.g., https://external.com,https://customer.com",
         default="",
     )
