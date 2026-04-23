@@ -15,19 +15,13 @@ _HOP_BY_HOP = frozenset([
 ])
 
 
-@api.route("/chat/<path:subpath>", methods=["GET"])
-def chat_embed_proxy(subpath: str):
-    """Proxy /chat/* to Dify web frontend, injecting embed origin cookie.
-
-    ALB cannot inject cookies based on request headers, so SSO server handles
-    /chat/ requests, detects iframe embed via Sec-Fetch-Dest, and stamps a
-    dify_embed_origin cookie before forwarding the response to the browser.
-    """
+def _proxy_with_embed_cookie(path: str):
+    """Proxy request to Dify web frontend and inject embed origin cookie."""
     if not config.DIFY_WEB_INTERNAL_URL:
         logger.error("DIFY_WEB_INTERNAL_URL is not configured")
         return {"error": "proxy not configured"}, 502
 
-    target = f"{config.DIFY_WEB_INTERNAL_URL.rstrip('/')}/chat/{subpath}"
+    target = f"{config.DIFY_WEB_INTERNAL_URL.rstrip('/')}/{path}"
     if request.query_string:
         target += f"?{request.query_string.decode('utf-8', errors='replace')}"
 
@@ -80,3 +74,13 @@ def chat_embed_proxy(subpath: str):
     )
 
     return response
+
+
+@api.route("/chat/<path:subpath>", methods=["GET"])
+def chat_embed_proxy(subpath: str):
+    return _proxy_with_embed_cookie(f"chat/{subpath}")
+
+
+@api.route("/chatbot/<path:subpath>", methods=["GET"])
+def chatbot_embed_proxy(subpath: str):
+    return _proxy_with_embed_cookie(f"chatbot/{subpath}")
