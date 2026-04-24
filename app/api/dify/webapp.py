@@ -251,9 +251,32 @@ def get_app_access_mode_console():
 
 
 @api.get("/webapp/access-mode/id")
+def get_app_access_mode_internal():
+    """Dify 서버 내부 호출용 — 저장된 실제 값 그대로 반환 (origin 체크 없음).
+
+    Dify API가 `/console/api/apps/{id}` 응답에 app.access_mode를 채우기 위해
+    server-to-server로 호출. 콘솔 UI의 접근제어 다이얼로그가 이 값을 그대로 씀.
+    """
+    app_id = request.args.get("appId", "")
+    app_code = request.args.get("appCode", "")
+    logger.info(f"get_app_access_mode_internal: app_id={app_id}, app_code={app_code}")
+
+    if app_code != "":
+        site = db.session.query(Site).filter(Site.code == app_code).first()
+        if site:
+            app_id = str(site.app_id)
+    if app_id == "":
+        return {"accessMode": "public"}
+
+    access_mode = redis_client.get(f"webapp_access_mode:{app_id}")
+    if access_mode:
+        return {"accessMode": access_mode.decode()}
+    return {"accessMode": "public"}
+
+
 @api.get("/api/webapp/access-mode")
 def get_app_access_mode():
-    """Webapp용 — public 앱은 허용된 embed origin일 때만 public, 아니면 private."""
+    """브라우저 webapp용 — public 앱은 허용된 embed origin일 때만 public, 아니면 private."""
     app_id = request.args.get("appId", "")
     app_code = request.args.get("appCode", "")
     logger.info(f"get_app_access_mode: app_id={app_id}, app_code={app_code}")

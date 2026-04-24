@@ -12,6 +12,9 @@ _HOP_BY_HOP = frozenset([
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade",
     "content-length",  # requests handles this automatically
+    # requests 가 자동으로 응답을 decompress 하므로 Content-Encoding 헤더를
+    # 그대로 전달하면 브라우저가 한 번 더 풀려다 ERR_CONTENT_DECODING_FAILED 발생.
+    "content-encoding",
 ])
 
 
