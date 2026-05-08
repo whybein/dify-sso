@@ -163,11 +163,34 @@ CORS 설정 (Outline이 브라우저에서 직접 업로드/다운로드):
 
 ### 3.1 client_secret 생성
 
-평문 시크릿 2개 생성:
+**[macOS / Linux]** 평문 시크릿 2개 생성:
 ```bash
 openssl rand -hex 24   # outline용
 openssl rand -hex 24   # excalidash용
 ```
+
+**[Windows PowerShell]** OpenSSL 없을 때:
+```powershell
+function Get-RandHex { param([int]$bytes=24)
+  $b = New-Object byte[] $bytes
+  [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+  -join ($b | ForEach-Object { $_.ToString('x2') })
+}
+Get-RandHex 24    # outline용
+Get-RandHex 24    # excalidash용
+```
+
+또는 한 줄로:
+```powershell
+-join (1..24 | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+```
+
+**[Windows cmd / Git Bash]** Git이 설치돼 있으면 `openssl`이 같이 깔려서 macOS 명령 그대로 사용 가능:
+```bash
+openssl rand -hex 24
+```
+
+---
 
 각 평문을 hash로 변환 (Authelia 호스트/Pod에서):
 ```bash
