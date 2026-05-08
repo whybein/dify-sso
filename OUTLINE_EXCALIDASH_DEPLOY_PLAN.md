@@ -27,7 +27,7 @@
 | Outline 이미지 | `outlinewiki/outline:1.7.1` (공식 직접 pull) |
 | ExcaliDash 이미지 | `zimengxiong/excalidash-backend:0.5.0`, `zimengxiong/excalidash-frontend:0.5.0` |
 | Outline DB | RDS (dify 인스턴스에 `outline` database 추가) |
-| Outline Redis | **dify Redis 재사용** (DB index 다르게, 예: `/3`) |
+| Outline Redis | **dify Redis 재사용** (`redis-dev.llm-dev.svc.cluster.local:6379/3`, 비번 없음) |
 | ExcaliDash DB | SQLite (PVC) |
 | 첨부 저장소 | **S3** (RAG 대비, 결정됨) |
 | ECR | **사용 안 함** (외부 직접 pull, 결정됨) |
@@ -35,6 +35,7 @@
 | TLS | ALB에서 termination, 기존 와일드카드 ACM 재사용 |
 | ALB | **dify와 공유** (`alb.ingress.kubernetes.io/group.name`로 묶음) — 새 LB 안 띄움 |
 | 인증 | 기존 `llm-dev/authelia-dev`에 OIDC client 2개 추가 (`authelia-sso-dev`는 Dify 전용, 건드리지 않음) |
+| 권한 정책 | LDAP 그룹 매핑 사용 안 함. 첫 admin = 부트스트랩(ExcaliDash) / 첫 로그인(Outline). 이후 각 앱 UI에서 승격. **추후 조직도 DB 기반 팀 권한 별도 설계 (dify 패턴)** |
 
 ---
 
@@ -65,17 +66,25 @@
 
 ### 2.1 RDS (본인 권한 있음)
 
-dify가 쓰는 RDS 인스턴스에 outline 전용 database/user 생성:
+dify가 쓰는 RDS 인스턴스에 **기존 `dify` 유저 그대로** outline database만 신규 생성 (별도 비번 관리 X):
 
-```sql
--- 비밀번호는 openssl rand -hex 16으로 생성
-CREATE USER outline WITH PASSWORD 'GENERATED_PASSWORD';
-CREATE DATABASE outline OWNER outline ENCODING 'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8';
-GRANT ALL PRIVILEGES ON DATABASE outline TO outline;
+```bash
+# psql로 RDS 접속 (어느 database로 들어가도 무관, 보통 dify로)
+psql -h <RDS엔드포인트> -U dify -d dify
 ```
 
-→ DATABASE_URL: `postgres://outline:비번@RDS엔드포인트:5432/outline`
+```sql
+-- 접속 후 실행
+CREATE DATABASE outline OWNER dify;
+\l                    -- outline 보이는지 확인
+\q
+```
+
+→ DATABASE_URL: `postgres://dify:기존DIFY비번@RDS엔드포인트:5432/outline`
 → `PGSSLMODE=require` (RDS는 SSL 필요)
+→ ENCODING은 RDS 기본 UTF8이라 명시 불필요 (걱정되면 `ENCODING 'UTF8'` 추가)
+
+> dev 환경이라 dify 유저 재사용으로 단순화. prod는 별도 outline 유저 생성 권장 (권한 격리).
 
 ### 2.2 Route53 (인프라팀 또는 본인)
 
@@ -275,8 +284,8 @@ serviceAccountName: docs-outline-dev
 ```
 SECRET_KEY               = openssl rand -hex 32
 UTILS_SECRET             = openssl rand -hex 32
-DATABASE_URL             = postgres://outline:DBPASSWORD@RDS엔드포인트:5432/outline
-REDIS_URL                = redis://:REDISPASSWORD@redis-host:6379/3
+DATABASE_URL             = postgres://dify:기존DIFY비번@RDS엔드포인트:5432/outline
+REDIS_URL                = redis://redis-dev.llm-dev.svc.cluster.local:6379/3
 OIDC_CLIENT_SECRET       = (Authelia에 등록한 outline 평문)
 ```
 
@@ -408,10 +417,10 @@ OIDC_CLIENT_ID           = excalidash
 OIDC_REDIRECT_URI        = https://exc.oilbank.co.kr/api/auth/oidc/callback
 OIDC_SCOPES              = openid profile email groups
 OIDC_GROUPS_CLAIM        = groups
-OIDC_ADMIN_GROUPS        = (LDAP 그룹명, 모르면 빈 값으로 시작)
+OIDC_ADMIN_GROUPS        =                        # 빈 값 (정책: LDAP 그룹 안 씀)
 ```
 
-> LDAP 자체는 dify 때 Authelia에 이미 연결돼 있음. 새 LDAP 입력 작업 없음. 위 값은 "어떤 LDAP 그룹을 ExcaliDash admin으로 매핑할지"의 그룹명 한 줄. 빈 값이어도 부트스트랩 코드로 admin 만들면 동작.
+> **권한 정책: LDAP 그룹 기반 admin 매핑은 사용하지 않음.** 회사 조직도/팀별 권한은 별도 DB로 관리하는 방향(dify와 동일 패턴). ExcaliDash admin은 부트스트랩 코드로 첫 1명 만들고, 이후 ExcaliDash UI에서 승격하는 방식으로 운영. `groups` scope는 미래 확장 위해 토큰엔 실어두지만 매핑엔 사용 안 함.
 
 ### 5.4 Accordion env — frontend
 
@@ -494,6 +503,19 @@ Outline 본문을 dify RAG에 연결할 때 검토할 항목:
 - 임베딩: 기존 Weaviate 인스턴스 재사용
 - 동기화: webhook 기반 또는 주기 잡
 - 관련 메모: `~/.claude/projects/-Users-youngbo-Dev-dify/memory/project_outline_excalidash_local_test.md`
+
+## 7-1. 팀 권한 (조직도 DB 기반, 나중)
+
+dify와 동일하게 회사 조직도/팀 정보를 DB에 두고 그 기준으로 앱 권한을 부여할 계획.
+
+**1단계 (지금):** 각 앱 자체 admin UI로 수동 관리 — 부트스트랩 또는 첫 로그인으로 시드 admin 1명 → UI로 권한 승격.
+
+**2단계 (나중):** 조직도 DB 통합. 후보 방식:
+- Authelia가 OIDC 토큰에 부서/팀 custom claim 추가 → 앱이 claim 보고 권한 부여
+- 또는 앱 자체 API로 조직도 DB 동기화 (Outline은 API 풍부, ExcaliDash는 제한적)
+- dify-sso가 어떻게 처리하는지 보고 같은 패턴 채택 (일관성)
+
+LDAP 그룹은 인증 통과 외에는 권한 결정에 안 씀.
 
 ---
 
