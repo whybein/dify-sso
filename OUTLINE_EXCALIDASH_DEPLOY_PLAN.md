@@ -11,7 +11,8 @@
 - EKS + Accordion 관리 (kubectl 불가, Pod 터미널 가능)
 - 시크릿/환경변수는 **Accordion UI에서 직접 입력** (manifest에 안 박음)
 - ALB ingress controller (internal, dify와 공유)
-- Authelia: `https://dify.oilbank.co.kr/auth` (dify 도메인 서브패스)
+- Authelia: `https://dify.oilbank.co.kr/auth` (dify 도메인 서브패스, K8s에선 `llm-dev` 네임스페이스의 `authelia-dev`)
+- `authelia-sso-dev`(dify-sso 브릿지)는 Dify 전용 — Outline/ExcaliDash 배포에선 무관
 - 이미지: 외부 직접 pull
 
 ---
@@ -20,10 +21,11 @@
 
 | 항목 | 결정 |
 |------|------|
-| 네임스페이스 | `bao-apps` (둘 다 같은 네임스페이스) |
+| 네임스페이스 | **앱별 분리** — Outline은 `docs-dev`, ExcaliDash는 `exc-dev` (dev 환경. 추후 `*-prod` 별도) |
+| Accordion 앱 이름 | `docs-dev/docs-outline-dev`, `exc-dev/exc-backend-dev`, `exc-dev/exc-frontend-dev` |
 | 호스트명 | `docs.oilbank.co.kr`, `exc.oilbank.co.kr` |
-| Outline 이미지 | `outlinewiki/outline:latest` (공식 직접 pull) |
-| ExcaliDash 이미지 | `zimengxiong/excalidash-backend:latest`, `zimengxiong/excalidash-frontend:latest` |
+| Outline 이미지 | `outlinewiki/outline:1.7.1` (공식 직접 pull) |
+| ExcaliDash 이미지 | `zimengxiong/excalidash-backend:0.5.0`, `zimengxiong/excalidash-frontend:0.5.0` |
 | Outline DB | RDS (dify 인스턴스에 `outline` database 추가) |
 | Outline Redis | **dify Redis 재사용** (DB index 다르게, 예: `/3`) |
 | ExcaliDash DB | SQLite (PVC) |
@@ -32,30 +34,29 @@
 | EFS | **신규 할당** (Accordion 표준 패턴, 결정됨) |
 | TLS | ALB에서 termination, 기존 와일드카드 ACM 재사용 |
 | ALB | **dify와 공유** (`alb.ingress.kubernetes.io/group.name`로 묶음) — 새 LB 안 띄움 |
-| 인증 | 기존 회사 Authelia 그대로, OIDC client 2개 추가 |
+| 인증 | 기존 `llm-dev/authelia-dev`에 OIDC client 2개 추가 (`authelia-sso-dev`는 Dify 전용, 건드리지 않음) |
 
 ---
 
 ## 1. 작업 순서 (의존성 순)
 
 ```
+✅ Accordion 네임스페이스 수령: docs-dev, exc-dev, EFS 할당분
+
 [1] AWS 인프라 사전작업 (병렬 가능)
    ├─ Route53: docs/exc 레코드
    ├─ ACM: 기존 cert 재사용 확인
-   ├─ RDS: outline database/user 생성
-   ├─ EFS: 신규 할당 (Accordion 표준)
-   ├─ Security Group: Pod CIDR → RDS, Redis
-   └─ S3 버킷 + IRSA (Outline 첨부용)
+   ├─ RDS: outline database/user 생성 (docs-dev에서 사용)
+   ├─ Security Group: docs-dev / exc-dev Pod CIDR → RDS, Redis
+   └─ S3 버킷 + IRSA (docs-dev에 마운트)
         ↓
 [2] 회사 Authelia configuration.yml에 OIDC client 2개 추가
         ↓
-[3] Accordion 네임스페이스 신청 (bao-apps)
+[3] Outline 배포 (docs-dev) → 동작 확인
         ↓
-[4] Outline 배포 → 동작 확인
+[4] ExcaliDash 배포 (exc-dev) → 동작 확인
         ↓
-[5] ExcaliDash 배포 → 동작 확인
-        ↓
-[6] (별도 작업) RAG 연계 설계
+[5] (별도 작업) RAG 연계 설계
 ```
 
 ---
@@ -102,16 +103,16 @@ Accordion에서 신규 할당 받음 (워크로드별 EFS 표준 패턴).
 
 ### 2.5 Security Group
 
-`bao-apps` 네임스페이스 Pod CIDR이 다음에 접근 가능해야 함:
-- RDS 5432
-- Redis 6379
+`docs-dev`, `exc-dev` 두 네임스페이스의 Pod CIDR이 다음에 접근 가능해야 함:
+- RDS 5432 (Outline만 사용 — `docs-dev` 필수, `exc-dev`는 SQLite라 불필요)
+- Redis 6379 (Outline만 사용 — `docs-dev` 필수)
 
-dify와 같은 네임스페이스라면 기존 룰 그대로 통함. 새 네임스페이스면 인프라팀에 룰 추가 요청.
+dify 네임스페이스 룰을 카피해서 적용. 인프라팀에 두 네임스페이스 Pod CIDR 추가 요청.
 
 ### 2.6 S3 + IRSA (Outline 첨부)
 
 새 버킷 1개:
-- 이름: `oilbank-bao-apps-outline-attachments` (또는 회사 명명규칙에 맞게)
+- 이름: `oilbank-docs-dev-outline-attachments` (또는 회사 명명규칙에 맞게)
 - 리전: `ap-northeast-2`
 - 퍼블릭 액세스 차단: ALL
 - 버전 관리: 활성화 (실수 삭제 복구용)
@@ -134,8 +135,8 @@ IAM 정책 (IRSA로 outline ServiceAccount에 부여):
         "s3:GetBucketLocation"
       ],
       "Resource": [
-        "arn:aws:s3:::oilbank-bao-apps-outline-attachments",
-        "arn:aws:s3:::oilbank-bao-apps-outline-attachments/*"
+        "arn:aws:s3:::oilbank-docs-dev-outline-attachments",
+        "arn:aws:s3:::oilbank-docs-dev-outline-attachments/*"
       ]
     }
   ]
@@ -158,7 +159,7 @@ CORS 설정 (Outline이 브라우저에서 직접 업로드/다운로드):
 
 ---
 
-## 3. 회사 Authelia에 OIDC client 추가
+## 3. 회사 Authelia에 OIDC client 추가 (`llm-dev/authelia-dev`)
 
 ### 3.1 client_secret 생성
 
@@ -212,21 +213,23 @@ identity_providers:
 
 ### 3.3 Authelia 재시작
 
-ConfigMap 변경 후 Authelia Pod 재시작 (Accordion에서 rollout).
+`llm-dev` 네임스페이스의 `authelia-dev` ConfigMap 수정 후 Pod rollout (Accordion에서). `authelia-sso-dev`(dify-sso 브릿지)는 건드리지 말 것 — Dify 전용이라 변경 불필요.
 
 ---
 
-## 4. Accordion에서 Outline 배포
+## 4. Accordion에서 Outline 배포 (`docs-dev`)
 
 ### 4.1 워크로드 정의
 
 | 항목 | 값 |
 |------|-----|
+| 앱 이름 (Accordion) | `docs-outline-dev` |
+| 네임스페이스 | `docs-dev` |
 | 워크로드 종류 | Deployment |
 | Replicas | 1 (Outline은 단일 인스턴스만 지원) |
-| 이미지 | `outlinewiki/outline:latest` (또는 ECR 태그) |
+| 이미지 | `outlinewiki/outline:1.7.1` |
 | 컨테이너 포트 | 3000 |
-| Service 포트 | 3000 |
+| Service 포트 | 3000 (Service 이름도 `docs-outline-dev`) |
 | 헬스체크 | HTTP GET `/_health` 포트 3000 |
 | 리소스 요청 | CPU 200m, Memory 512Mi |
 | 리소스 제한 | CPU 1, Memory 1.5Gi |
@@ -237,9 +240,9 @@ Outline 첨부는 S3로 → **PVC 불필요**.
 
 ServiceAccount에 IRSA 어노테이션 붙임:
 ```yaml
-serviceAccountName: outline
+serviceAccountName: docs-outline-dev
 # 별도 ServiceAccount 리소스에 IRSA annotation
-# eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/outline-s3-access
+# eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/docs-outline-dev-s3-access
 ```
 
 ### 4.3 Accordion env (시크릿 종류)
@@ -267,7 +270,7 @@ ENABLE_UPDATES           = false
 # S3 첨부 저장소
 FILE_STORAGE             = s3
 AWS_REGION               = ap-northeast-2
-AWS_S3_UPLOAD_BUCKET_NAME = oilbank-bao-apps-outline-attachments
+AWS_S3_UPLOAD_BUCKET_NAME = oilbank-docs-dev-outline-attachments
 AWS_S3_UPLOAD_BUCKET_URL = https://s3.ap-northeast-2.amazonaws.com
 AWS_S3_FORCE_PATH_STYLE  = false
 AWS_S3_UPLOAD_MAX_SIZE   = 262144000
@@ -296,8 +299,8 @@ Outline Ingress 리소스 (Accordion에 manifest 또는 UI로 입력):
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: outline
-  namespace: bao-apps
+  name: docs-outline-dev
+  namespace: docs-dev
   annotations:
     kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/group.name: dify-shared           # ← dify와 동일 값
@@ -316,7 +319,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: outline
+                name: docs-outline-dev
                 port:
                   number: 3000
 ```
@@ -331,28 +334,30 @@ spec:
 
 ---
 
-## 5. Accordion에서 ExcaliDash 배포
+## 5. Accordion에서 ExcaliDash 배포 (`exc-dev`)
 
-### 5.1 워크로드 정의 (2개 Deployment)
+### 5.1 워크로드 정의 (2개 Deployment, 네임스페이스 `exc-dev`)
 
-**backend**
+**backend** — 앱 이름 `exc-backend-dev`
 
 | 항목 | 값 |
 |------|-----|
-| 이미지 | `zimengxiong/excalidash-backend:latest` |
+| 앱 이름 (Accordion) | `exc-backend-dev` |
+| 이미지 | `zimengxiong/excalidash-backend:0.5.0` |
 | Replicas | 1 (SQLite + in-memory 상태라 단일 인스턴스만) |
-| 포트 | 8000 |
+| 포트 | 8000 (Service 이름도 `exc-backend-dev`) |
 | 헬스체크 | HTTP GET `/health` 포트 8000 |
-| PVC | `excalidash-data` 5Gi → `/app/prisma` |
+| PVC | `exc-backend-dev-data` 5Gi → `/app/prisma` |
 | 리소스 | CPU 100m, Memory 256Mi |
 
-**frontend**
+**frontend** — 앱 이름 `exc-frontend-dev`
 
 | 항목 | 값 |
 |------|-----|
-| 이미지 | `zimengxiong/excalidash-frontend:latest` |
+| 앱 이름 (Accordion) | `exc-frontend-dev` |
+| 이미지 | `zimengxiong/excalidash-frontend:0.5.0` |
 | Replicas | 1 |
-| 포트 | 80 |
+| 포트 | 80 (Service 이름도 `exc-frontend-dev`) |
 | 헬스체크 | HTTP GET `/` 포트 80 |
 | 리소스 | CPU 50m, Memory 128Mi |
 
@@ -388,7 +393,7 @@ OIDC_ADMIN_GROUPS        = (LDAP 그룹명, 모르면 빈 값으로 시작)
 ### 5.4 Accordion env — frontend
 
 ```
-BACKEND_URL              = excalidash-backend.bao-apps.svc.cluster.local:8000
+BACKEND_URL              = exc-backend-dev.exc-dev.svc.cluster.local:8000
 ```
 
 ### 5.5 Ingress
@@ -399,8 +404,8 @@ BACKEND_URL              = excalidash-backend.bao-apps.svc.cluster.local:8000
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: excalidash
-  namespace: bao-apps
+  name: exc-frontend-dev
+  namespace: exc-dev
   annotations:
     kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/group.name: dify-shared           # ← dify와 동일 값
@@ -419,7 +424,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: excalidash-frontend
+                name: exc-frontend-dev
                 port:
                   number: 80
 ```
@@ -481,11 +486,11 @@ Outline 본문을 dify RAG에 연결할 때 검토할 항목:
 | Redis 인스턴스 | | ✅ dify와 같은 인스턴스 | DB index만 다르게 (`/3`) |
 | EFS | ✅ ExcaliDash용 1개 | | Outline은 S3 |
 | S3 버킷 | ✅ 1개 (Outline 첨부) | | |
-| K8s Namespace | ✅ `bao-apps` | | |
-| K8s Ingress 리소스 | ✅ 2개 (Outline, ExcaliDash) | | 라우팅 정의는 호스트별로 별도 |
-| K8s Deployment | ✅ 3개 (outline, ex-backend, ex-frontend) | | |
-| K8s Service | ✅ 3개 | | |
-| K8s ServiceAccount | ✅ outline (IRSA) | | S3 권한 |
+| K8s Namespace | ✅ 받음: `docs-dev`, `exc-dev` | | 앱별 분리 |
+| K8s Ingress 리소스 | ✅ 2개 (`docs-outline-dev`, `exc-frontend-dev`) | | 호스트별 라우팅 |
+| K8s Deployment | ✅ 3개 (`docs-outline-dev`, `exc-backend-dev`, `exc-frontend-dev`) | | |
+| K8s Service | ✅ 3개 (Deployment 이름과 동일) | | |
+| K8s ServiceAccount | ✅ `docs-outline-dev` (IRSA) | | S3 권한 |
 | Authelia OIDC client | ✅ 2개 등록 | | configuration.yml ConfigMap에 추가 |
 | LDAP | | ✅ dify 때 연결한 거 그대로 | 새 작업 없음 |
 
@@ -502,7 +507,7 @@ Outline 본문을 dify RAG에 연결할 때 검토할 항목:
 | Outline DB | PostgreSQL 컨테이너 | RDS (dify 인스턴스, outline DB) |
 | Outline Redis | Redis 컨테이너 | dify Redis 재사용 (`/3` index) |
 | ExcaliDash DB | SQLite (컨테이너 볼륨) | SQLite (EFS PVC) |
-| Outline 첨부 | 컨테이너 볼륨 | S3 (`oilbank-bao-apps-outline-attachments`) |
+| Outline 첨부 | 컨테이너 볼륨 | S3 (`oilbank-docs-dev-outline-attachments`) |
 | 도메인 | localhost:3000, :6767 | docs.*, exc.* |
 | TLS | self-signed (Caddy) | ALB + ACM 와일드카드 |
 | `NODE_TLS_REJECT_UNAUTHORIZED=0` | 필요 | **제거** (정상 cert) |
