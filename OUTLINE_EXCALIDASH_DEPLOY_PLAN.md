@@ -223,27 +223,32 @@ identity_providers:
       - client_id: outline
         client_name: Outline Wiki
         client_secret: '$pbkdf2-sha512$...'
-        public: false
-        authorization_policy: one_factor
+        authorization_policy: one_factor          # dify 정책에 맞춰 two_factor도 가능
         redirect_uris:
           - https://docs.oilbank.co.kr/auth/oidc.callback
         scopes: [openid, profile, email, offline_access]
-        userinfo_signed_response_alg: none
-        token_endpoint_auth_method: client_secret_post
+        require_pkce: true                        # 기본값 false라 명시 필요
 
       - client_id: excalidash
         client_name: ExcaliDash
         client_secret: '$pbkdf2-sha512$...'
-        public: false
-        authorization_policy: one_factor
+        authorization_policy: one_factor          # dify 정책에 맞춰 two_factor도 가능
         redirect_uris:
           - https://exc.oilbank.co.kr/api/auth/oidc/callback
         scopes: [openid, profile, email, groups]
-        userinfo_signed_response_alg: none
-        token_endpoint_auth_method: client_secret_post
+        require_pkce: true
 ```
 
-### 3.3 Authelia 재시작
+### 3.3 PKCE 호환성 주의
+
+`require_pkce: true` 설정 후 Outline에서 PKCE 관련 에러 (예: `code_challenge missing`) 발생 시:
+- Outline 1.7.1은 `node-openid-client` 사용 → PKCE 지원하지만 일부 버전/설정에 따라 미동작 가능
+- 임시 우회: `require_pkce: false`로 변경 후 재시작
+- 영구 해결: Outline OIDC 설정에서 PKCE 명시적으로 활성화 (현재 1.7.1 기준 default 활성)
+
+ExcaliDash는 로컬 테스트에서 PKCE(S256) 사용 확인됨 → `require_pkce: true` 정상 동작.
+
+### 3.4 Authelia 재시작
 
 `llm-dev` 네임스페이스의 `authelia-dev` ConfigMap 수정 후 Pod rollout (Accordion에서). `authelia-sso-dev`(dify-sso 브릿지)는 건드리지 말 것 — Dify 전용이라 변경 불필요.
 
@@ -319,7 +324,22 @@ OIDC_DISPLAY_NAME        = Authelia
 OIDC_SCOPES              = openid profile email offline_access
 ```
 
-### 4.5 Ingress
+### 4.5 Service
+
+Accordion에서 Workload 생성 시 **Service 포트**를 입력하면 Service까지 자동 생성됨. 별도 메뉴로 만들 필요 없는 경우가 많지만, 명시적으로 확인:
+
+| 항목 | 값 |
+|------|-----|
+| 이름 | `docs-outline-dev` (Deployment 이름과 동일) |
+| 네임스페이스 | `docs-dev` |
+| 타입 | ClusterIP (기본) |
+| 포트 | 3000 |
+| Target Port | 3000 (Pod의 컨테이너 포트) |
+| 셀렉터 | Workload의 라벨 (자동 매핑) |
+
+> Accordion에 Service 별도 메뉴가 있으면 위 값 그대로 입력. Workload 생성 시 자동 생성되면 별도 작업 불필요. 생성 후 Services 메뉴에서 `docs-outline-dev`가 보이는지 확인.
+
+### 4.6 Ingress
 
 **ALB 자체는 dify와 공유.** AWS Load Balancer Controller가 `alb.ingress.kubernetes.io/group.name`이 같은 Ingress들을 한 ALB에 묶어줌. 새 LB DNS 안 만듦.
 
@@ -356,7 +376,7 @@ spec:
                   number: 3000
 ```
 
-### 4.6 검증
+### 4.7 검증
 
 - [ ] Pod 정상 (`Ready`)
 - [ ] `https://docs.oilbank.co.kr/` 접속 → 200
@@ -428,7 +448,18 @@ OIDC_ADMIN_GROUPS        =                        # 빈 값 (정책: LDAP 그룹
 BACKEND_URL              = exc-backend-dev.exc-dev.svc.cluster.local:8000
 ```
 
-### 5.5 Ingress
+### 5.5 Service
+
+각 Workload별로 Service 1개씩 (Accordion이 Workload 생성 시 자동, 또는 별도 메뉴):
+
+| Service 이름 | 네임스페이스 | 타입 | 포트 | Target Port | 비고 |
+|-------------|------------|------|------|-------------|------|
+| `exc-backend-dev` | exc-dev | ClusterIP | 8000 | 8000 | frontend가 내부 DNS로 호출 |
+| `exc-frontend-dev` | exc-dev | ClusterIP | 80 | 80 | Ingress가 가리킴 |
+
+> backend Service의 cluster DNS: `exc-backend-dev.exc-dev.svc.cluster.local:8000` — frontend의 `BACKEND_URL` 환경변수가 이걸 참조.
+
+### 5.6 Ingress
 
 §4.5와 동일 패턴 (같은 ALB 공유). frontend로 라우팅 — `/api/*`는 frontend의 nginx가 backend로 reverse proxy.
 
@@ -461,7 +492,7 @@ spec:
                   number: 80
 ```
 
-### 5.6 첫 admin 부트스트랩
+### 5.7 첫 admin 부트스트랩
 
 `AUTH_MODE=hybrid` 첫 배포 시 backend 로그에 1회용 부트스트랩 코드 출력:
 ```
@@ -472,7 +503,7 @@ spec:
 
 대안: `AUTH_MODE=oidc_enforced`로 시작하면 부트스트랩 단계 건너뛰고 OIDC만 사용 (추천).
 
-### 5.7 검증
+### 5.8 검증
 
 - [ ] backend Pod healthy (`/health` 200)
 - [ ] frontend Pod healthy
