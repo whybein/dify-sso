@@ -235,32 +235,59 @@ identity_providers:
       - client_id: outline
         client_name: Outline Wiki
         client_secret: '$pbkdf2-sha512$...'
-        authorization_policy: one_factor          # dify 정책에 맞춰 two_factor도 가능
+        authorization_policy: one_factor          # dify 정책에 맞춰 통일
+        consent_mode: 'pre-configured'            # 첫 로그인만 동의 화면, 이후 안 뜸 (Authelia 4.39+에서 offline_access 있으면 매번 뜰 수도)
+        pre_configured_consent_duration: '1y'
         redirect_uris:
           - https://docs.oilbank.co.kr/auth/oidc.callback
-        scopes: [openid, profile, email, offline_access]
-        require_pkce: true                        # 기본값 false라 명시 필요
+        post_logout_redirect_uris:                # 로그아웃 후 Outline 메인으로 복귀
+          - https://docs.oilbank.co.kr/
+          - https://docs.oilbank.co.kr
+        scopes: [openid, profile, email, offline_access]   # offline_access 필수 (제거 시 /api/auth.info 401)
+        # require_pkce: 명시 안 함 = 기본값 false
+        # → Outline 1.7.1의 passport-oauth2가 PKCE 미지원. true면 'code_challenge missing' 에러.
 
       - client_id: excalidash
         client_name: ExcaliDash
         client_secret: '$pbkdf2-sha512$...'
-        authorization_policy: one_factor          # dify 정책에 맞춰 two_factor도 가능
+        authorization_policy: one_factor          # dify 정책에 맞춰 통일
+        consent_mode: 'implicit'                  # 동의 화면 안 뜸 (offline_access 없으니 implicit 동작)
         redirect_uris:
           - https://exc.oilbank.co.kr/api/auth/oidc/callback
         scopes: [openid, profile, email, groups]
-        require_pkce: true
+        require_pkce: true                        # ExcaliDash는 PKCE(S256) 지원 확인됨
 ```
 
-### 3.3 PKCE 호환성 주의
+### 3.3 PKCE 호환성 (앱별 차이)
 
-`require_pkce: true` 설정 후 Outline에서 PKCE 관련 에러 (예: `code_challenge missing`) 발생 시:
-- Outline 1.7.1은 `node-openid-client` 사용 → PKCE 지원하지만 일부 버전/설정에 따라 미동작 가능
-- 임시 우회: `require_pkce: false`로 변경 후 재시작
-- 영구 해결: Outline OIDC 설정에서 PKCE 명시적으로 활성화 (현재 1.7.1 기준 default 활성)
+| 앱 | `require_pkce` | 이유 |
+|----|---------------|------|
+| Outline | **false** (기본값) | Outline 1.7.1이 사용하는 `passport-oauth2` 라이브러리가 PKCE 미지원. `true`로 두면 로그에 `Clients must include a 'code_challenge'` 에러 발생 |
+| ExcaliDash | **true** | 로컬 테스트에서 PKCE(S256) 정상 동작 확인 |
 
-ExcaliDash는 로컬 테스트에서 PKCE(S256) 사용 확인됨 → `require_pkce: true` 정상 동작.
+> Outline은 confidential client (client_secret 보유) 라 PKCE 없어도 Authorization Code Flow + secret로 충분한 보안. 운영에서도 outline은 `require_pkce: false` 유지.
 
-### 3.4 Authelia 재시작
+### 3.4 consent_mode 차이 (앱별)
+
+| 앱 | `consent_mode` | 이유 |
+|----|---------------|------|
+| Outline | **pre-configured (1y)** | `offline_access` scope 사용 시 Authelia가 implicit 모드라도 매번 동의 요구 (OAuth 2.1 보안). pre-configured는 첫 1회만 묻고 1년간 기억 |
+| ExcaliDash | **implicit** | offline_access 미사용 → implicit으로 동의 화면 완전 생략 가능 |
+
+> `consent_mode: implicit`이 안 먹는 케이스 = scope에 `offline_access` 있을 때. 리프레시 토큰 발급은 보안상 명시적 사용자 동의 필요. `pre-configured`로 우회.
+
+### 3.5 offline_access 필수 (Outline)
+
+Outline `OIDC_SCOPES`에 **`offline_access`는 반드시 포함**해야 합니다. 제거 시:
+- OIDC 로그인 자체는 성공
+- 직후 `/api/auth.info`에서 **401 Unauthorized** 발생
+- 사용자에게 "인증실패 - 현재 로그인할 수 없습니다" 표시
+
+원인: Outline 1.7.1이 grant_flow에서 refresh_token 기대. offline_access 빠지면 grant_types와 불일치 → 세션 생성 실패.
+
+→ Authelia client `scopes`와 Outline `OIDC_SCOPES` 양쪽 모두 `offline_access` 포함.
+
+### 3.6 Authelia 재시작
 
 `llm-dev` 네임스페이스의 `authelia-dev` ConfigMap 수정 후 Pod rollout (Accordion에서). `authelia-sso-dev`(dify-sso 브릿지)는 건드리지 말 것 — Dify 전용이라 변경 불필요.
 
@@ -332,9 +359,48 @@ OIDC_TOKEN_URI           = https://dify.oilbank.co.kr/auth/api/oidc/token
 OIDC_USERINFO_URI        = https://dify.oilbank.co.kr/auth/api/oidc/userinfo
 OIDC_LOGOUT_URI          = https://dify.oilbank.co.kr/auth/logout
 OIDC_USERNAME_CLAIM      = preferred_username
-OIDC_DISPLAY_NAME        = Authelia
-OIDC_SCOPES              = openid profile email offline_access
+OIDC_DISPLAY_NAME        = Authelia        # 또는 "Oilbank SSO" 등 사용자 친화적 이름
+OIDC_SCOPES              = openid profile email offline_access   # ★ offline_access 필수 — 제거 시 /api/auth.info 401
+
+# SMTP (메일 발송 — 초대장, 멘션 알림 등)
+SMTP_HOST                = mail.oilbank.co.kr      # 회사 SMTP relay 주소
+SMTP_PORT                = 587                      # 587(STARTTLS) / 465(SMTPS) / 25(평문)
+SMTP_SECURE              = false                    # ★ 포트별 매핑: 587→false, 465→true, 25→false
+SMTP_FROM_EMAIL          = outline-noreply@oilbank.co.kr   # 회사 SMTP가 허용하는 from 도메인
+SMTP_NAME                = Oilbank Outline          # 발신자 표시 이름
+SMTP_REPLY_EMAIL         =                           # 답장 받을 주소 (선택)
+# SMTP_USERNAME, SMTP_PASSWORD: 회사 relay가 인증 필요 시만. 사내 IP relay면 미설정으로 OK
+
+# SMTP_SECURE 의미:
+#  true  = 연결 시작부터 직접 SSL/TLS (포트 465 전용)
+#  false = 평문 시작 → STARTTLS로 자동 업그레이드 (포트 587 표준)
+# 잘못된 조합 시 "wrong version number" TLS 에러 발생
 ```
+
+### 4.4-1 SMTP 환경변수 추가 설명
+
+회사 SMTP 정보 확인 후 위 값 채워 입력:
+
+| 변수 | 의미 | 일반 값 |
+|------|------|---------|
+| `SMTP_HOST` | SMTP 서버 호스트 | `smtp.oilbank.co.kr` 또는 사내 IP |
+| `SMTP_PORT` | 포트 | 587 (가장 흔함) |
+| `SMTP_SECURE` | TLS 사용 | `true` |
+| `SMTP_FROM_EMAIL` | 발신자 주소 | SMTP가 허용하는 from 도메인 (대개 `@oilbank.co.kr`) |
+| `SMTP_NAME` | 발신자 이름 | 사용자에게 표시 |
+| `SMTP_USERNAME` | 인증 계정 | **사내 IP relay면 빈 값** (인증 없음). SMTP AUTH 필요 시만 |
+| `SMTP_PASSWORD` | 비번 | 위와 동일 (시크릿) |
+
+> SMTP_USERNAME/PASSWORD 사용 시 → §4.3 시크릿 섹션으로 이동.
+
+확인 사항 (인프라/메일팀에 문의):
+- 허용 포트 (25/465/587)
+- 인증 방식 (relay vs SMTP AUTH)
+- 허용 from 도메인 (보통 `@회사도메인`만)
+
+테스트:
+- Outline에서 사용자 초대 → 본인 이메일 도착 확인
+- 안 되면 Outline Pod 로그에 `smtp` 키워드로 에러 확인
 
 ### 4.5 Service
 
