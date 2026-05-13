@@ -349,7 +349,7 @@ AWS_REGION               = ap-northeast-2
 AWS_S3_UPLOAD_BUCKET_NAME = oilbank-docs-dev-outline-attachments
 AWS_S3_UPLOAD_BUCKET_URL = https://s3.ap-northeast-2.amazonaws.com
 AWS_S3_FORCE_PATH_STYLE  = false
-AWS_S3_UPLOAD_MAX_SIZE   = 262144000
+AWS_S3_UPLOAD_MAX_SIZE   = 10485760    # 10 MB. 사용 패턴 보고 조정 (아래 표 참고)
 # IRSA로 권한 부여하므로 access key 불필요
 
 # OIDC (Authelia)
@@ -401,6 +401,32 @@ SMTP_REPLY_EMAIL         =                           # 답장 받을 주소 (선
 테스트:
 - Outline에서 사용자 초대 → 본인 이메일 도착 확인
 - 안 되면 Outline Pod 로그에 `smtp` 키워드로 에러 확인
+
+### 4.4-2 업로드 크기(`AWS_S3_UPLOAD_MAX_SIZE`) 단계별 임곗값
+
+용도와 사용 패턴에 따라 조정. **작게 시작해서 사용자 요청 시 늘리는 전략 권장.**
+
+| 단계 | 크기 | bytes 값 | 적합 케이스 |
+|------|------|---------|------------|
+| **시작 (위키 보수적)** | **10 MB** | **`10485760`** | 스크린샷·작은 PDF 위주 |
+| 일반 위키 운영 | 25 MB | `26214400` | 매뉴얼 PDF, 일반 이미지 |
+| 매뉴얼·PPT 자주 | 50 MB | `52428800` | PPT, 큰 PDF, 사진 |
+| 영상 첨부도 | 100 MB | `104857600` | 짧은 영상, 대용량 자료 |
+| 대용량 공유 (비추) | 250 MB | `262144000` | Outline 위키 용도엔 과함 |
+| 무제한 가까이 (X) | 1 GB+ | `1073741824` | 사실상 백업 용도, S3 비용↑ |
+
+계산 공식: `MB × 1024 × 1024 = bytes`
+
+**적용 시 주의:**
+- 값 줄여도 기존 업로드 파일엔 영향 없음. **앞으로 업로드 시점부터** 적용
+- Outline은 한도 초과 시 사용자에게 "파일이 너무 큽니다" 안내 자동 표시
+- 회사 보안 정책 (랜섬웨어 방지 등)이 있으면 그 한도에 맞춤
+
+**관련 환경변수:**
+- `AWS_S3_UPLOAD_MAX_SIZE` — S3 사용 시 (지금 우리 케이스)
+- `FILE_STORAGE_UPLOAD_MAX_SIZE` — local PVC 사용 시 (안 씀)
+
+→ 두 변수 같은 값으로 통일 권장 (하나만 설정해도 동작).
 
 ### 4.5 Service
 
