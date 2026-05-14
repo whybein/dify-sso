@@ -104,21 +104,29 @@ Outline 백엔드는 **Node.js + AWS SDK v3** (`@aws-sdk/client-s3`, `@aws-sdk/s
 
 IRSA가 동작하려면 EKS 클러스터에 IAM OIDC Provider 연결돼 있어야 함.
 
-확인:
+#### AWS 콘솔 방법
+
+1. EKS 콘솔 → 클러스터 → "Overview" 또는 "Configuration" 탭
+2. "OpenID Connect provider URL" 값 복사 (예: `https://oidc.eks.ap-northeast-2.amazonaws.com/id/ABC123...`)
+3. IAM 콘솔 → "Identity providers" 메뉴
+4. 위 URL이 목록에 있는지 확인
+   - 있음 → 그대로 진행
+   - 없음 → "Add provider" 클릭
+     - Type: OpenID Connect
+     - Provider URL: 위에서 복사한 URL
+     - Audience: `sts.amazonaws.com`
+     - "Add provider"
+
+#### CLI 방법 (참고)
+
 ```bash
 aws eks describe-cluster --name <클러스터명> \
   --query 'cluster.identity.oidc.issuer'
-# 출력 예: https://oidc.eks.ap-northeast-2.amazonaws.com/id/ABC123...
-
 aws iam list-open-id-connect-providers
-# 위 issuer URL이 결과에 있어야 함
-```
 
-미등록 시 등록:
-```bash
+# 미등록 시
 eksctl utils associate-iam-oidc-provider \
-  --cluster <클러스터명> \
-  --approve
+  --cluster <클러스터명> --approve
 ```
 
 → 클러스터에 IRSA 사용 이력 없으면 이 단계 필수.
@@ -129,6 +137,27 @@ eksctl utils associate-iam-oidc-provider \
 ```
 docs-outline-dev-s3-access
 ```
+
+#### AWS 콘솔 단계
+
+1. IAM 콘솔 → "Roles" → "Create role"
+2. **Trusted entity type:** "Web identity"
+3. **Identity provider:** 4.1에서 확인한 OIDC provider URL 선택
+4. **Audience:** `sts.amazonaws.com`
+5. "Add condition" 없이 Next → Permissions 단계
+6. **Permission Policy 생성:**
+   - "Create policy" 클릭 (별도 탭 열림)
+   - JSON 탭 → 아래 Permission Policy 붙여넣기
+   - 이름: `docs-outline-dev-s3-access-policy`
+   - "Create policy"
+7. 원래 탭으로 → 방금 만든 정책 검색해서 선택 → Next
+8. **Role name:** `docs-outline-dev-s3-access`
+9. "Create role"
+10. **Trust Policy 수정:**
+    - 생성된 Role 클릭 → "Trust relationships" 탭 → "Edit trust policy"
+    - 아래 Trust Policy JSON으로 교체
+    - "Update policy"
+11. 완료 후 Role의 ARN 복사 (예: `arn:aws:iam::691729631040:role/docs-outline-dev-s3-access`)
 
 #### Trust Policy
 
@@ -213,7 +242,18 @@ Accordion UI에서 추가하거나 직접 manifest 수정.
 
 ### 4.4 S3 버킷 CORS 설정
 
-브라우저가 S3에 직접 PUT 업로드하므로 CORS 필수:
+브라우저가 S3에 직접 PUT 업로드하므로 CORS 필수.
+
+#### AWS 콘솔 단계
+
+1. S3 콘솔 → 버킷 `hdo-s3-dev-an2-bao-691729631040-ap-northeast-2-an`
+2. "Permissions" 탭 클릭
+3. 아래로 스크롤 → "Cross-origin resource sharing (CORS)" 섹션
+4. "Edit" 클릭
+5. 아래 JSON 붙여넣기
+6. "Save changes"
+
+#### CORS JSON
 
 ```json
 [
