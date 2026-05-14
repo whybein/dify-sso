@@ -1,177 +1,138 @@
-# S3 + IRSA 셋업 요청 (Outline)
+# Outline S3 + IRSA 셋업 가이드
 
-Outline 첨부/이미지 업로드용 S3 + IRSA 셋업을 인프라팀에 요청하기 위한 정리 문서.
+Outline 첨부/이미지 업로드를 위한 AWS S3 + IRSA(IAM Role for ServiceAccount) 셋업 가이드.
 
-증상: Outline에서 이미지 업로드 시 `CredentialsProviderError: Could not load credentials from any providers`.
+대상 증상: Outline에서 이미지 업로드 시 `CredentialsProviderError: Could not load credentials from any providers` 발생.
 원인: ServiceAccount에 IRSA 어노테이션 없음 → AWS SDK가 자격증명 못 찾음.
 
 ---
 
-## 0. 미리 셋업 권장 (우선순위)
-
-| 항목 | 필수도 | 이유 |
-|------|------|------|
-| **IAM Role + IRSA 어노테이션** | 🔴 필수 | 없으면 자격증명 불가 |
-| **CORS 설정** | 🔴 필수 | 없으면 브라우저 업로드 무조건 실패 (CORS 차단) |
-| **Prefix (공유 버킷이면)** | 🟡 권장 | 다른 앱과 격리, IAM 권한 좁히기 |
-| Bucket Policy | 🟢 선택 | 회사 보안 표준 따름 |
-| 암호화 (SSE) | 🟢 선택 | 회사 표준 |
-
-→ **IAM Role + CORS + (필요시) Prefix** 3가지를 첫 요청에서 한 번에 받는 게 효율적.
-
----
-
-## 1. 받은 정보
+## 1. 환경 정보
 
 | 항목 | 값 |
 |------|-----|
-| 환경 | 개발 (dev) |
-| 서비스 | S3 |
-| 버킷 이름 | `hdo-s3-dev-an2-bao-691729631040-ap-northeast-2-an` |
+| 환경 | dev |
+| AWS 계정 ID | `691729631040` |
+| 리전 | `ap-northeast-2` |
+| S3 버킷 | `hdo-s3-dev-an2-bao-691729631040-ap-northeast-2-an` |
 | 버킷 ARN | `arn:aws:s3:::hdo-s3-dev-an2-bao-691729631040-ap-northeast-2-an` |
-| AWS 계정 ID | `691729631040` (버킷 이름에 박혀 있음) |
-| 리전 | `ap-northeast-2` (버킷 이름에서 추론) |
+| K8s 네임스페이스 | `docs-dev` |
+| ServiceAccount | `docs-outline-dev` |
+| Outline 도메인 | `https://docsdev.oilbank.co.kr` |
 
 ---
 
-## 2. 인프라팀에 확인 필요한 항목
+## 2. Outline의 S3 사용 방식
 
-### Q1. 이 버킷이 Outline 전용인가, 공유인가?
+Outline 백엔드는 **Node.js + AWS SDK v3** (`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`) 사용.
 
-이름에 `bao`가 있어 여러 앱이 공유하는 버킷으로 추정됩니다.
+업로드 흐름:
 
-- 전용이면 → 그대로 사용
-- 공유면 → outline용 prefix(폴더) 지정 필요 (예: `outline/`, `docs-dev/`)
+```
+1. [브라우저] 이미지 첨부 클릭
+   ↓ POST /api/attachments.create
 
-**답변 예상:**
-- "outline 전용입니다" / "공유입니다, prefix는 `outline/`로 쓰세요" / 기타
+2. [Outline 서버] AWS SDK로 presigned POST URL 생성
+   - 자격증명: IRSA로 받은 임시 STS 토큰
+   - 서버→S3 SDK 호출 (CORS 무관)
+   ↓ JSON 응답 (presigned URL + 필드)
 
-### Q2. 버킷 CORS 설정이 이미 있는지
+3. [브라우저] presigned URL로 S3에 직접 PUT
+   - 브라우저→S3 (cross-origin → CORS 검사)
+   - S3가 CORS AllowedOrigins 확인
 
-Outline은 브라우저에서 S3로 직접 PUT 업로드합니다. CORS 필요.
+4. [S3] 파일 저장 후 200 응답
 
-```json
-[
-  {
-    "AllowedHeaders": ["*"],
-    "AllowedMethods": ["GET", "PUT", "POST", "DELETE"],
-    "AllowedOrigins": ["https://docsdev.oilbank.co.kr"],
-    "ExposeHeaders": ["ETag"],
-    "MaxAgeSeconds": 3000
-  }
-]
+5. [브라우저 → Outline 서버] 업로드 완료 알림 → DB에 메타데이터 저장
 ```
 
-- 이미 위와 같이 설정돼 있으면 OK
-- 없거나 다르면 → 추가/수정 요청
-
-### Q3. 버킷 정책 (bucket policy) 별도 필요 여부
-
-- 일부 환경은 bucket policy + IAM Role 양쪽 필요
-- 어느 쪽인지 확인. IRSA만으로 충분한지
+→ **2단계는 IRSA(서버↔S3), 3단계는 CORS(브라우저↔S3) 둘 다 필요.**
 
 ---
 
-## 2-A. IRSA 동작 원리 (이해를 위한 설명)
-
-회사가 S3 호스팅 방식 처음이라 IRSA 구조 정리. **자동/수동으로 나뉘는 부분 명확화.**
+## 3. IRSA 동작 원리
 
 ### 필요한 4가지 구성요소
 
-| 구성요소 | 누가 셋업 | 자동/수동 |
-|---------|---------|---------|
-| 1. **IAM Role** (Trust Policy + Permission Policy) | 인프라팀 | 수동 |
-| 2. **EKS OIDC Provider 등록** | 인프라팀 (1회성) | 수동 |
-| 3. **ServiceAccount 어노테이션** | 인프라팀 또는 본인 | 수동 |
-| 4. **`AWS_WEB_IDENTITY_TOKEN_FILE` 토큰** | EKS Pod Identity webhook | **자동** |
+| 구성요소 | 수동/자동 |
+|---------|---------|
+| 1. EKS OIDC Provider 등록 (클러스터 단위, 1회성) | 수동 |
+| 2. IAM Role (Trust Policy + Permission Policy) | 수동 |
+| 3. ServiceAccount 어노테이션 | 수동 |
+| 4. `AWS_WEB_IDENTITY_TOKEN_FILE` 토큰 + 환경변수 주입 | **자동** (EKS Pod Identity webhook) |
 
-→ 1~3만 셋업하면 4번은 EKS가 자동 처리. **별도 토큰 발급/관리 작업 없음.**
+→ 1~3만 셋업하면 4번은 EKS가 자동 처리. 토큰 발급/갱신/주입은 별도 작업 없음.
 
 ### 전체 흐름
 
 ```
-[셋업 단계 — 수동]
-1. EKS OIDC Provider 등록 (인프라팀, 1회성)
+[셋업 — 수동]
+1. EKS OIDC Provider 등록 (1회성)
    ↓ EKS 클러스터 ↔ IAM 연동
 
-2. IAM Role 생성 (인프라팀)
-   - Trust Policy: "docs-dev/docs-outline-dev SA가 이 Role을 Assume 가능"
+2. IAM Role 생성
+   - Trust Policy: 특정 ServiceAccount만 AssumeRoleWithWebIdentity 허용
    - Permission Policy: S3 권한
    ↓
 
-3. ServiceAccount에 어노테이션 추가 (인프라팀 또는 본인)
+3. ServiceAccount 어노테이션 추가
    eks.amazonaws.com/role-arn: arn:aws:iam::691729631040:role/...
    ↓
 
 4. Pod 재시작
 
 [Pod 실행 시 — 자동]
-5. EKS Pod Identity webhook이 Pod 생성 감지
-   - ServiceAccount 어노테이션 확인 → IAM Role 매핑 발견
+5. EKS Pod Identity webhook:
+   - ServiceAccount 어노테이션 감지 → IAM Role 매핑
    - Pod에 자동 주입:
      · 환경변수: AWS_ROLE_ARN, AWS_WEB_IDENTITY_TOKEN_FILE, AWS_REGION
-     · 파일: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
-   ↓
+     · 파일: /var/run/secrets/eks.amazonaws.com/serviceaccount/token (JWT)
 
-6. AWS SDK가 Pod 안에서 자동으로:
+6. AWS SDK가 자동으로:
    - 토큰 파일 읽음
    - STS에 AssumeRoleWithWebIdentity 호출
    - 임시 자격증명 받음 (15분 단위 자동 갱신)
-   ↓
 
 7. S3 API 호출 정상 (presigned URL 생성 가능)
 ```
 
-### EKS OIDC Provider 등록 확인 (사전 점검)
+---
 
-IRSA가 동작하려면 **EKS 클러스터에 IAM OIDC Provider가 연결돼 있어야** 함:
+## 4. 셋업 방법
 
+### 4.1 EKS OIDC Provider 등록 확인 (사전 점검)
+
+IRSA가 동작하려면 EKS 클러스터에 IAM OIDC Provider 연결돼 있어야 함.
+
+확인:
 ```bash
-# 인프라팀 확인 명령
 aws eks describe-cluster --name <클러스터명> \
   --query 'cluster.identity.oidc.issuer'
 # 출력 예: https://oidc.eks.ap-northeast-2.amazonaws.com/id/ABC123...
 
-# OIDC provider 등록됐는지
 aws iam list-open-id-connect-providers
 # 위 issuer URL이 결과에 있어야 함
 ```
 
-미등록이면 IRSA 자체 동작 안 함. 등록은:
+미등록 시 등록:
 ```bash
 eksctl utils associate-iam-oidc-provider \
   --cluster <클러스터명> \
   --approve
 ```
 
-→ **dify가 IRSA 안 쓰면 이 OIDC provider 미등록 상태일 수 있음.** 인프라팀에 확인 요청.
+→ 클러스터에 IRSA 사용 이력 없으면 이 단계 필수.
 
----
+### 4.2 IAM Role 생성
 
-## 3. 인프라팀에 요청 사항
-
-### R0. EKS OIDC Provider 등록 확인 (사전 점검)
-
-dify가 IRSA 안 쓰고 있을 가능성이라 OIDC provider 미등록일 수도. 먼저 확인:
-
-```bash
-aws iam list-open-id-connect-providers
+#### Role 이름 (예시)
+```
+docs-outline-dev-s3-access
 ```
 
-→ 등록 안 됐으면:
-```bash
-eksctl utils associate-iam-oidc-provider --cluster <클러스터명> --approve
-```
+#### Trust Policy
 
-이건 1회성. 클러스터 단위 셋업. R1 진행 전 필수.
-
-### R1. IAM Role 생성 (IRSA용)
-
-```
-이름: docs-outline-dev-s3-access (또는 회사 명명규칙)
-```
-
-**Trust Policy** (어떤 SA가 이 Role을 Assume 할 수 있는지):
+특정 ServiceAccount만 이 Role을 Assume 가능하도록:
 
 ```json
 {
@@ -194,9 +155,18 @@ eksctl utils associate-iam-oidc-provider --cluster <클러스터명> --approve
 }
 ```
 
-> `<EKS OIDC issuer>`는 인프라팀이 클러스터 정보로 채움
+`<EKS OIDC issuer>` 부분은 4.1에서 확인한 issuer URL의 `https://` 제외한 부분.
 
-**Permission Policy** (이 Role이 가질 권한):
+예시 (실제 값으로):
+```json
+"Federated": "arn:aws:iam::691729631040:oidc-provider/oidc.eks.ap-northeast-2.amazonaws.com/id/ABC123"
+"oidc.eks.ap-northeast-2.amazonaws.com/id/ABC123:sub": "system:serviceaccount:docs-dev:docs-outline-dev"
+"oidc.eks.ap-northeast-2.amazonaws.com/id/ABC123:aud": "sts.amazonaws.com"
+```
+
+#### Permission Policy
+
+S3 버킷 read/write 권한:
 
 ```json
 {
@@ -221,32 +191,35 @@ eksctl utils associate-iam-oidc-provider --cluster <클러스터명> --approve
 }
 ```
 
-> 만약 prefix 사용이면 Resource를 `/outline/*` 같이 좁힐 수 있음 (Q1 답변 후 결정)
+> 공유 버킷이고 prefix(예: `outline/`) 사용 시 Resource를 `/outline/*`로 좁힐 수 있음.
 
-**작업 완료 후 알려주실 것:**
-- 생성된 Role의 **ARN** (예: `arn:aws:iam::691729631040:role/docs-outline-dev-s3-access`)
+생성 결과: **Role ARN** (예: `arn:aws:iam::691729631040:role/docs-outline-dev-s3-access`)
 
-### R2. ServiceAccount 어노테이션 추가
+### 4.3 ServiceAccount 어노테이션 추가
 
-`docs-dev` 네임스페이스의 `docs-outline-dev` ServiceAccount에 다음 annotation 추가:
+`docs-dev` 네임스페이스의 `docs-outline-dev` ServiceAccount에:
 
 ```yaml
+apiVersion: v1
+kind: ServiceAccount
 metadata:
+  name: docs-outline-dev
+  namespace: docs-dev
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::691729631040:role/<R1에서 받은 Role 이름>
+    eks.amazonaws.com/role-arn: arn:aws:iam::691729631040:role/docs-outline-dev-s3-access
 ```
 
-본인이 Accordion에서 직접 가능하면 ARN만 받아서 직접 추가. 권한 없으면 인프라팀에 요청.
+Accordion UI에서 추가하거나 직접 manifest 수정.
 
-### R3. 버킷 CORS 설정 (Q2 답변에 따라)
+### 4.4 S3 버킷 CORS 설정
 
-Q2에서 CORS가 없거나 다른 도메인만 허용하면 추가:
+브라우저가 S3에 직접 PUT 업로드하므로 CORS 필수:
 
 ```json
 [
   {
     "AllowedHeaders": ["*"],
-    "AllowedMethods": ["GET", "PUT", "POST", "DELETE"],
+    "AllowedMethods": ["GET", "PUT", "POST", "DELETE", "HEAD"],
     "AllowedOrigins": ["https://docsdev.oilbank.co.kr"],
     "ExposeHeaders": ["ETag"],
     "MaxAgeSeconds": 3000
@@ -254,22 +227,63 @@ Q2에서 CORS가 없거나 다른 도메인만 허용하면 추가:
 ]
 ```
 
----
+운영 도메인 추가 시:
+```json
+"AllowedOrigins": [
+  "https://docsdev.oilbank.co.kr",
+  "https://docs.oilbank.co.kr"
+]
+```
 
-## 4. dify 패턴 카피 (참고)
+### 4.5 (선택) S3 Bucket Policy
 
-dify가 같은 방식으로 S3를 쓰고 있다면 같은 셋업 카피하면 일관성 좋습니다.
+IAM Role만으로 충분하지만 보안 강화 시:
 
-확인할 것:
-- dify-api의 IRSA 어노테이션 (`eks.amazonaws.com/role-arn`)
-- dify-api의 S3 관련 환경변수
-- dify가 같은 버킷 + 다른 prefix 사용?
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowOutlineRole",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::691729631040:role/docs-outline-dev-s3-access"
+      },
+      "Action": [
+        "s3:PutObject", "s3:PutObjectAcl", "s3:GetObject",
+        "s3:DeleteObject", "s3:ListBucket", "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::hdo-s3-dev-an2-bao-691729631040-ap-northeast-2-an",
+        "arn:aws:s3:::hdo-s3-dev-an2-bao-691729631040-ap-northeast-2-an/*"
+      ]
+    },
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::hdo-s3-dev-an2-bao-691729631040-ap-northeast-2-an",
+        "arn:aws:s3:::hdo-s3-dev-an2-bao-691729631040-ap-northeast-2-an/*"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    }
+  ]
+}
+```
 
----
+### 4.6 Pod 재시작
 
-## 5. 본인이 할 작업 (위 정보 받은 후)
+ServiceAccount 어노테이션 변경은 새 Pod에만 적용됨. 기존 Pod 재시작 필수.
 
-### Accordion에서 docs-outline-dev 환경변수 추가/확인
+### 4.7 Outline 환경변수
+
+`docs-outline-dev` 워크로드에 다음 환경변수 설정:
 
 ```
 FILE_STORAGE              = s3
@@ -277,22 +291,18 @@ AWS_REGION                = ap-northeast-2
 AWS_S3_UPLOAD_BUCKET_NAME = hdo-s3-dev-an2-bao-691729631040-ap-northeast-2-an
 AWS_S3_UPLOAD_BUCKET_URL  = https://s3.ap-northeast-2.amazonaws.com
 AWS_S3_FORCE_PATH_STYLE   = false
-AWS_S3_UPLOAD_MAX_SIZE    = 262144000
-# IRSA로 권한 → AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY 불필요
+AWS_S3_UPLOAD_MAX_SIZE    = 10485760    # 10 MB (필요 따라 조정)
 ```
 
-(prefix 받으면 추가: `AWS_S3_UPLOAD_PREFIX = outline/` — Outline 1.7.1이 지원하면)
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`는 IRSA가 처리하므로 **설정 안 함.**
 
-### ServiceAccount 어노테이션 확인 (인프라팀이 안 했으면 본인이)
+---
 
-- Accordion → `docs-dev` 네임스페이스 → ServiceAccounts → `docs-outline-dev`
-- Annotations에 `eks.amazonaws.com/role-arn: arn:aws:iam::...:role/...` 박혀 있는지
+## 5. 검증
 
-### Pod 재시작 후 검증 — 3단계
+Pod 터미널에서 3단계 검증.
 
-#### 1) 환경변수 자동 주입 확인
-
-Pod 터미널에서:
+### 5.1 환경변수 자동 주입 확인
 
 ```bash
 env | grep AWS_
@@ -306,28 +316,18 @@ AWS_REGION=ap-northeast-2
 AWS_DEFAULT_REGION=ap-northeast-2
 ```
 
-위 4개 환경변수가 **EKS Pod Identity webhook이 자동 주입**한 것. 본인이 환경변수 추가 안 했어도 보여야 함.
+위 4개가 보이지 않으면 IRSA 셋업 미완료 (4.3 어노테이션 누락 또는 Pod 재시작 안 됨).
 
-| 결과 | 진단 |
-|------|------|
-| 4개 다 보임 | IRSA 셋업 OK → 다음 단계로 |
-| 아무것도 안 보임 | ServiceAccount 어노테이션 미적용 or Pod이 다른 SA 사용 |
-| AWS_REGION만 보임 | 본인이 env 박은 것만 있고 IRSA는 미동작 |
-
-#### 2) 토큰 파일 존재 확인
+### 5.2 토큰 파일 존재 확인
 
 ```bash
 ls -la /var/run/secrets/eks.amazonaws.com/serviceaccount/token
 cat /var/run/secrets/eks.amazonaws.com/serviceaccount/token | head -c 50
 ```
 
-**기대:** 파일 존재 + JWT 토큰 시작 (`eyJ...`).
+기대: 파일 존재 + JWT 토큰 시작 (`eyJ...`).
 
-없으면 → EKS Pod Identity webhook 동작 안 함. 인프라팀 확인.
-
-#### 3) STS로 자격증명 받기 테스트
-
-실제로 AWS API 호출이 되는지 검증:
+### 5.3 STS 자격증명 발급 테스트
 
 ```bash
 node -e "
@@ -346,55 +346,34 @@ const fs = require('fs');
 "
 ```
 
-| 결과 | 진단 |
+| 결과 | 의미 |
 |------|------|
-| `OK: AKIA...` | IRSA 완전 동작 → Outline에서 업로드 가능해야 함 |
-| `ERR: AccessDenied` | Trust Policy 잘못 (SA 이름·OIDC issuer 불일치) |
-| `ERR: InvalidIdentityToken` | 토큰 파일 손상 또는 만료 |
-| `ERR: ...` | 메시지 따라 디버깅 |
+| `OK: AKIA...` | IRSA 완전 동작 → 다음 검증 |
+| `ERR: AccessDenied` | Trust Policy 불일치 (SA 이름/네임스페이스/OIDC issuer) |
+| `ERR: InvalidIdentityToken` | OIDC Provider 미등록 또는 토큰 만료 |
 
-### 동작 검증
+### 5.4 실제 업로드 동작 검증
 
-- Outline 워크스페이스 설정 → 로고 업로드 시도 → 성공 시 S3에 파일 생성됨
-- AWS 콘솔에서 버킷 안 객체 확인 (생성 시각 + 크기 확인)
-- 브라우저 DevTools Network 탭에서 S3 PUT 요청 200 OK 확인
-
----
-
-## 6. 진행 흐름 요약
-
-```
-[지금]
-1. 위 메시지 인프라팀에 전달
-   - Q1, Q2, Q3 확인 요청
-   - R1, R2, R3 작업 요청
-
-[답변 받은 후]
-2. Role ARN 받기 → ServiceAccount에 annotation 추가
-3. Outline 환경변수 확인 (이미 박혀 있을 가능성 높음)
-4. Pod 재시작
-5. 업로드 검증
-
-[운영 전환 시]
-- 로컬·dev에서 동작 검증되면 prod에선 별도 버킷 + 별도 Role
-```
+1. Outline 워크스페이스 설정 → 로고 업로드 또는 문서 본문에 이미지 삽입
+2. 브라우저 DevTools → Network 탭 → S3 도메인으로의 PUT 요청 200 OK 확인
+3. AWS 콘솔 → S3 버킷 → 객체 목록에 새 파일 보이는지 확인
 
 ---
 
-## 7. 트러블슈팅 — 셋업 후에도 실패 시
+## 6. 트러블슈팅
 
 | 증상 | 원인 | 대응 |
 |------|------|------|
-| `CredentialsProviderError` 계속 | IRSA annotation 미적용 또는 Pod이 다른 SA 사용 | Pod의 serviceAccountName 확인, env에 AWS_ROLE_ARN 있는지 |
-| `env`에 AWS_ROLE_ARN 안 보임 | ServiceAccount 어노테이션 누락 | Accordion에서 어노테이션 확인, Pod 재시작 |
-| `토큰 파일 없음` | EKS Pod Identity webhook 미동작 | 인프라팀에 EKS 설정 확인 요청 |
-| `STS AccessDenied` | Trust Policy 불일치 (SA 이름·네임스페이스·OIDC issuer) | Role의 Trust Policy 확인 |
-| `STS InvalidIdentityToken` | OIDC Provider 미등록 또는 토큰 만료 | `aws iam list-open-id-connect-providers` 확인 |
-| `Access Denied` (S3) | IAM Permission Policy 권한 부족 | Resource ARN 정확한지, Action 빠진 거 없는지 |
-| `CORS error` (브라우저) | 버킷 CORS 미설정 | Q2 결과 따라 추가 |
+| `CredentialsProviderError` | IRSA 어노테이션 미적용 또는 Pod이 다른 SA 사용 | Pod의 `serviceAccountName` 확인, env에 `AWS_ROLE_ARN` 있는지 |
+| `env`에 `AWS_ROLE_ARN` 안 보임 | ServiceAccount 어노테이션 누락 | 어노테이션 추가, Pod 재시작 |
+| 토큰 파일 없음 | EKS Pod Identity webhook 미동작 | EKS 클러스터 OIDC provider 등록 확인 |
+| `STS AccessDenied` | Trust Policy 불일치 | Trust Policy의 SA 이름·네임스페이스·OIDC issuer 재확인 |
+| `STS InvalidIdentityToken` | OIDC Provider 미등록 또는 클러스터 OIDC URL 불일치 | `aws iam list-open-id-connect-providers` 확인 |
+| `Access Denied` (S3 PutObject) | IAM Permission Policy 권한 부족 | Resource ARN·Action 재확인 |
+| `CORS error` (브라우저) | 버킷 CORS 미설정 | 4.4 적용 |
 | `Bucket does not exist` | 버킷명 오타 | env 값과 실제 버킷명 비교 |
 
-## 8. 단계별 진단 흐름
+### 단계별 진단 흐름
 
 ```
 [Outline 업로드 시도]
@@ -405,20 +384,29 @@ const fs = require('fs');
      │
      ├─ Yes → env | grep AWS_ 결과:
      │   ├─ AWS_ROLE_ARN 없음 → ServiceAccount 어노테이션 미적용
-     │   │   → Accordion에서 어노테이션 추가 → Pod 재시작
+     │   │   → 어노테이션 추가 → Pod 재시작
      │   └─ AWS_ROLE_ARN 있음 → 토큰 파일 확인
-     │       ├─ 없음 → EKS webhook 이슈 (인프라팀)
+     │       ├─ 없음 → EKS webhook 이슈 (OIDC provider 확인)
      │       └─ 있음 → STS 테스트
      │           ├─ AccessDenied → Trust Policy 잘못
-     │           └─ OK → AWS SDK 캐싱 이슈, Pod 재시작
+     │           └─ OK → AWS SDK 캐싱, Pod 재시작
      │
-     └─ No (다른 에러) → 메시지 따라:
+     └─ No (다른 에러) →
          ├─ Access Denied (S3) → IAM Permission 부족
          ├─ CORS error → 버킷 CORS 미설정
          └─ Network error → VPC/SG 확인
 ```
 
-## 9. 한 줄 요약
+---
 
-> IAM Role(Trust + Permission) + ServiceAccount 어노테이션 + (사전) EKS OIDC Provider 등록 + S3 CORS.
-> 이 4가지 셋업되면 **토큰·환경변수 주입·STS 갱신은 EKS가 자동** 처리.
+## 7. 요약
+
+| 셋업 항목 | 결과 |
+|---------|------|
+| EKS OIDC Provider 등록 | 클러스터 IRSA 사용 가능 |
+| IAM Role (Trust + Permission) | 특정 SA가 S3 접근 가능 |
+| ServiceAccount 어노테이션 | Pod에 IRSA 환경변수 자동 주입 |
+| S3 버킷 CORS | 브라우저 직접 업로드 허용 |
+| Pod 재시작 | 새 환경변수 반영 |
+
+토큰 발급·갱신·환경변수 주입은 EKS Pod Identity webhook이 자동 처리.
